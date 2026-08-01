@@ -1,0 +1,203 @@
+/* AccessibleAudioStudio styles
+   Principle: nothing important is ever conveyed by color, icon, or layout
+   alone. Styling here is purely cosmetic polish on top of a page that is
+   already fully understandable with CSS turned off entirely. */
+
+:root {
+  --color-bg: #ffffff;
+  --color-text: #1a1a1a;
+  --color-accent: #1c4e80;
+  --color-border: #6b6b6b;
+  --color-error-bg: #fdecea;
+  --color-error-text: #7a1212;
+  --focus-outline: 3px solid #1c4e80;
+  --font-base: 1.05rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: var(--font-base);
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-bg);
+  max-width: 46rem;
+  margin-inline: auto;
+  padding: 1rem;
+}
+
+h1, h2, h3 {
+  line-height: 1.25;
+}
+
+.tagline {
+  margin-top: 0;
+  color: #333;
+}
+
+.skip-link {
+  position: absolute;
+  left: -999px;
+  top: auto;
+  background: var(--color-accent);
+  color: #fff;
+  padding: 0.75rem 1rem;
+  z-index: 100;
+}
+
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.panel {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin-block: 1.25rem;
+}
+
+.notice {
+  border: 2px solid var(--color-border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin-block: 1.25rem;
+}
+
+.notice--error {
+  background: var(--color-error-bg);
+  color: var(--color-error-text);
+  border-color: var(--color-error-text);
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-top: 0.75rem;
+}
+
+select,
+input[type="text"],
+textarea {
+  display: block;
+  width: 100%;
+  max-width: 32rem;
+  font-size: 1rem;
+  padding: 0.5rem;
+  margin-top: 0.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+button,
+.button-link {
+  font-size: 1rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background: var(--color-accent);
+  color: #fff;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button:disabled {
+  background: #e0e0e0;
+  border-color: #a0a0a0;
+  color: #666;
+  cursor: not-allowed;
+}
+
+button:not(:disabled):hover,
+.button-link:hover {
+  filter: brightness(1.1);
+}
+
+:focus-visible {
+  outline: var(--focus-outline);
+  outline-offset: 2px;
+}
+
+.save-panel {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--color-border);
+}
+
+.recording-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recording-item {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  margin-block: 0.75rem;
+}
+
+.recording-item--selected {
+  border-width: 2px;
+  border-color: var(--color-accent);
+}
+
+.recording-item__name {
+  margin: 0 0 0.25rem 0;
+}
+
+.recording-item__meta,
+.recording-item__notes {
+  margin: 0.25rem 0;
+  color: #333;
+}
+
+.recording-item__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+.app-footer {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+@media (max-width: 480px) {
+  body {
+    padding: 0.75rem;
+  }
+  .button-row {
+    flex-direction: column;
+  }
+  .button-row button {
+    width: 100%;
+  }
+}

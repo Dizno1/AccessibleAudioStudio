@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AccessibleAudioStudio</title>
+  <link rel="stylesheet" href="app/css/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+
+  <!-- Live regions for status announcements. Visually hidden, always present. -->
+  <div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="alert-announcer" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+  <header class="app-header">
+    <h1>AccessibleAudioStudio</h1>
+    <p class="tagline">A professional recording environment built for keyboard and screen reader users.</p>
+  </header>
+
+  <main id="main-content">
+
+    <!-- Unsupported browser notice, hidden unless needed -->
+    <section id="unsupported-notice" class="notice notice--error" hidden>
+      <h2>This browser cannot run AccessibleAudioStudio</h2>
+      <p id="unsupported-details"></p>
+    </section>
+
+    <section aria-labelledby="setup-heading" class="panel">
+      <h2 id="setup-heading">Microphone Setup</h2>
+
+      <p id="mic-status">Microphone access has not been enabled yet.</p>
+
+      <button type="button" id="enable-mic-button">Enable Microphone Access</button>
+
+      <div id="mic-selection" hidden>
+        <label for="mic-select">Microphone</label>
+        <select id="mic-select"></select>
+
+        <h3>Recording Profile</h3>
+        <label for="profile-select">Choose a recording profile</label>
+        <select id="profile-select" aria-describedby="profile-description"></select>
+        <p id="profile-description"></p>
+      </div>
+    </section>
+
+    <section aria-labelledby="recording-heading" class="panel">
+      <h2 id="recording-heading">Recording</h2>
+
+      <p id="recording-status">Not recording.</p>
+
+      <div class="button-row">
+        <button type="button" id="start-recording-button" disabled>
+          Start Recording (Ctrl+Alt+R)
+        </button>
+        <button type="button" id="pause-resume-button" disabled>
+          Pause Recording (Ctrl+Alt+Space)
+        </button>
+        <button type="button" id="stop-recording-button" disabled>
+          Stop Recording (Ctrl+Alt+S)
+        </button>
+      </div>
+
+      <div id="save-panel" hidden class="save-panel">
+        <h3 id="save-heading">Save Recording</h3>
+        <p id="save-duration-description"></p>
+
+        <label for="recording-name-input">Recording name</label>
+        <input type="text" id="recording-name-input" />
+
+        <label for="recording-notes-input">Notes (optional)</label>
+        <textarea id="recording-notes-input" rows="3"></textarea>
+
+        <div class="button-row">
+          <button type="button" id="save-recording-button">Save Recording</button>
+          <button type="button" id="discard-recording-button">Discard Recording</button>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="playback-heading" class="panel">
+      <h2 id="playback-heading">Playback</h2>
+
+      <p id="playback-status">No recording selected for playback.</p>
+
+      <audio id="audio-player" preload="metadata"></audio>
+
+      <div class="button-row">
+        <button type="button" id="play-pause-button" disabled>
+          Play (Ctrl+Alt+P)
+        </button>
+        <button type="button" id="restart-button" disabled>Restart</button>
+        <button type="button" id="skip-backward-button" disabled>Skip Backward 10 Seconds</button>
+        <button type="button" id="skip-forward-button" disabled>Skip Forward 10 Seconds</button>
+        <button type="button" id="jump-beginning-button" disabled>Jump to Beginning</button>
+        <button type="button" id="jump-end-button" disabled>Jump to End</button>
+        <button type="button" id="announce-position-button" disabled>Announce Current Position</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="library-heading" class="panel">
+      <h2 id="library-heading">Recording Library</h2>
+      <div id="library-container">
+        <p>Loading your recordings…</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="app-footer">
+    <details>
+      <summary>Keyboard Shortcuts</summary>
+      <ul>
+        <li>Ctrl+Alt+R — Start Recording</li>
+        <li>Ctrl+Alt+S — Stop Recording</li>
+        <li>Ctrl+Alt+Space — Pause or Resume Recording</li>
+        <li>Ctrl+Alt+P — Play or Pause the selected recording</li>
+      </ul>
+      <p>Shortcuts do not work while typing in a text field, and every visible button always works as an alternative.</p>
+    </details>
+  </footer>
+
+  <script type="module" src="app/js/main.js"></script>
+</body>
+</html>
