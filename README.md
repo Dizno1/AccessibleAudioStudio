@@ -13,8 +13,9 @@ A user can currently:
 - Enable microphone access and choose a specific microphone
 - Choose a Recording Profile (Quick Note, Spoken Word, Natural Voice)
 - Start, pause, resume, and stop a recording
-- Save a recording with a name and optional notes
-- Play back any saved recording — play/pause, restart, skip forward/backward, jump to beginning/end
+- Listen to a just-stopped recording immediately, before naming it or deciding whether to keep it
+- Save a recording (with a name and optional notes), Record Again, or Discard it
+- Play back the current unsaved recording or any saved recording — play/pause, restart, skip forward/backward, jump to beginning/end
 - Browse, rename, annotate, download, and delete recordings in the Recording Library
 - Do all of the above with visible buttons or with global keyboard shortcuts
 
@@ -48,6 +49,7 @@ app/js/
   library.js               Accessible rendering of the Recording Library
   profiles.js              Recording Profile definitions
   shortcutService.js       Centralized global keyboard shortcut service
+  shortcutDiagnostics.js   Tracks the last shortcut detected, for the Diagnostics panel
   announcer.js             ARIA live region status/alert announcements
   timeFormat.js             Natural-language duration/date formatting
 docs/
@@ -66,7 +68,7 @@ tests/                     Reserved for future automated tests
 |---|---|
 | Ctrl+Alt+R | Start or Stop Recording (toggle, like the record button on a physical recorder) |
 | Ctrl+Alt+Space | Pause or Resume Recording |
-| Ctrl+Alt+P | Play or Pause the selected recording |
+| Ctrl+Alt+P | Play or Pause the current unsaved recording, or the saved recording selected in the library if there is no unsaved recording |
 
 Shortcuts are suspended while typing in a text field. Every visible button remains fully functional at all times -- shortcuts are a supplement, never a replacement.
 

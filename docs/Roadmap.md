@@ -17,15 +17,23 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 
 **Recording Engine** (`app/js/recordingEngine.js`)
 - Explicit state machine (idle → recording → paused → stopped) built on `MediaRecorder`, guarding against invalid transitions.
-- Start, Pause, Resume, Stop, and Save (via the Recording Library) are all implemented.
+- Start, Pause, Resume, and Stop are implemented. Stopping does not save automatically — see "Review before saving" below.
+
+**Review before saving** (`app/js/main.js`)
+- When a recording stops, it is never saved sight-unseen: the user can listen to it immediately, using the ordinary Playback controls, before naming it or deciding whether to keep it.
+- Stopping announces once, "Recording stopped. Ready for review," moves focus to the Play button, and does not auto-play.
+- Three decisions are offered: **Save Recording** (only now does the app ask for a name and notes — with a useful default name — and notes), **Record Again** (confirms with "Record again and discard the current recording?" before discarding), and **Discard Recording**.
+- While a recording is under review, Start Recording is disabled and the Recording Library's "Select for Playback" controls are disabled, so what's loaded for playback can never silently drift from what the user is actually reviewing.
 
 **Playback** (`app/js/playback.js`)
 - Play/Pause, Restart, Skip Forward, Skip Backward, Jump to Beginning, Jump to End — all keyboard operable through standard buttons.
 - No waveform or visual timeline. Position/duration are exposed only as natural-language text, and only on demand (an explicit "Announce Current Position" control), never as a running commentary.
+- Ctrl+Alt+P (and the Play/Pause button) act on the current unsaved recording when one is under review, otherwise on whichever saved recording is selected in the library. If neither exists, it announces "No recording is available for playback." rather than doing nothing silently.
 
 **Recording Library** (`app/js/library.js`, `app/js/storage.js`)
 - Recordings persist locally in IndexedDB (Local First) with name, creation date, duration, recording profile, and notes.
 - Rename, edit notes, download, select-for-playback, and delete, all through plain semantic controls.
+- Every action button's accessible name includes the recording's own name (e.g. "Select second test for playback", "Rename second test", "Delete second test") so a screen reader user always knows which recording a control belongs to, without relying on proximity to a heading. The select control communicates state entirely through `aria-pressed` — its name doesn't change between "Select" and "Selected."
 - Original recorded audio is never modified after save (Preserve Original Recordings) — only metadata is editable.
 
 **Recording Profiles** (`app/js/profiles.js`)
@@ -47,7 +55,7 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 - No editing, trimming, or markers — intentionally deferred.
 - No transcription, AI features, cloud sync, or VoiceOfOpenDoor integration — intentionally deferred.
 - Rename and notes editing currently use the browser's native prompt dialog for simplicity; a fully in-page accessible form may replace this in a later phase if user feedback calls for it.
-- Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. Left unchanged for now, pending a retest using the new Keyboard Shortcut Diagnostics panel to determine whether the keystroke isn't reaching the app, is being suppressed, or the handler is correctly declining because no recording is selected.
+- Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. Its priority logic and "no recording available" messaging are now clarified, but the original report of the keystroke not being detected at all is still unconfirmed either way — pending a retest using the Keyboard Shortcut Diagnostics panel.
 
 ## Planned future phases (not yet scheduled)
 

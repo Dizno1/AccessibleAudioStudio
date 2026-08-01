@@ -61,9 +61,20 @@
         </button>
       </div>
 
-      <div id="save-panel" hidden class="save-panel">
+      <div id="review-panel" hidden class="review-panel">
+        <h3 id="review-heading">Review Recording</h3>
+        <p id="review-duration-description"></p>
+        <p>Use the Playback controls below to listen before deciding.</p>
+
+        <div class="button-row">
+          <button type="button" id="save-recording-button">Save Recording</button>
+          <button type="button" id="record-again-button">Record Again</button>
+          <button type="button" id="discard-recording-button">Discard Recording</button>
+        </div>
+      </div>
+
+      <div id="save-form" hidden class="save-panel">
         <h3 id="save-heading">Save Recording</h3>
-        <p id="save-duration-description"></p>
 
         <label for="recording-name-input">Recording name</label>
         <input type="text" id="recording-name-input" />
@@ -72,8 +83,8 @@
         <textarea id="recording-notes-input" rows="3"></textarea>
 
         <div class="button-row">
-          <button type="button" id="save-recording-button">Save Recording</button>
-          <button type="button" id="discard-recording-button">Discard Recording</button>
+          <button type="button" id="confirm-save-button">Save</button>
+          <button type="button" id="cancel-save-button">Cancel</button>
         </div>
       </div>
     </section>

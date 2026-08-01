@@ -42,12 +42,17 @@ const el = {
   pauseResumeButton: document.getElementById("pause-resume-button"),
   stopButton: document.getElementById("stop-recording-button"),
 
-  savePanel: document.getElementById("save-panel"),
-  saveDurationDescription: document.getElementById("save-duration-description"),
+  savePanel: document.getElementById("review-panel"),
+  reviewDurationDescription: document.getElementById("review-duration-description"),
+  saveButton: document.getElementById("save-recording-button"),
+  recordAgainButton: document.getElementById("record-again-button"),
+  discardButton: document.getElementById("discard-recording-button"),
+
+  saveForm: document.getElementById("save-form"),
   nameInput: document.getElementById("recording-name-input"),
   notesInput: document.getElementById("recording-notes-input"),
-  saveButton: document.getElementById("save-recording-button"),
-  discardButton: document.getElementById("discard-recording-button"),
+  confirmSaveButton: document.getElementById("confirm-save-button"),
+  cancelSaveButton: document.getElementById("cancel-save-button"),
 
   playbackStatus: document.getElementById("playback-status"),
   audioPlayer: document.getElementById("audio-player"),
@@ -245,46 +250,99 @@ async function stopRecording() {
     state.micStream = null;
     state.pendingRecording = { blob, durationSeconds };
 
-    el.recordingStatus.textContent = "Recording stopped.";
-    announceStatus("Recording stopped.");
-
     el.startButton.disabled = false;
     el.pauseResumeButton.disabled = true;
     el.stopButton.disabled = true;
     el.micSelect.disabled = false;
     el.profileSelect.disabled = false;
 
-    openSavePanel(durationSeconds);
+    openReviewPanel(durationSeconds);
   } catch (err) {
     announceAlert("Recording could not be stopped cleanly. " + describeError(err));
   }
 }
 
-function openSavePanel(durationSeconds) {
+/**
+ * Enter the review state: the just-stopped recording is loaded into the
+ * shared Playback controls (but NOT auto-played), and the user is offered
+ * Save / Record Again / Discard before ever being asked for a name.
+ */
+function openReviewPanel(durationSeconds) {
+  el.recordingStatus.textContent = "Recording stopped. Ready for review.";
+  el.reviewDurationDescription.textContent = `Length: ${formatDurationNatural(durationSeconds)}.`;
+  el.savePanel.hidden = false;
+  el.startButton.disabled = true;
+
+  // Reviewing an unsaved recording takes over the shared playback controls.
+  // Selecting a different saved recording is disabled until this one is
+  // resolved, so what's loaded never silently drifts from what Ctrl+Alt+P
+  // will act on.
+  playback.load(state.pendingRecording.blob);
+  setPlaybackControlsEnabled(true);
+  updatePlaybackStatusText();
+  refreshLibrary();
+
+  announceStatus("Recording stopped. Ready for review.");
+  el.playPauseButton.focus();
+}
+
+function closeReviewPanel() {
+  el.savePanel.hidden = true;
+  el.saveForm.hidden = true;
+}
+
+function setPlaybackControlsEnabled(enabled) {
+  [
+    el.playPauseButton,
+    el.restartButton,
+    el.skipBackwardButton,
+    el.skipForwardButton,
+    el.jumpBeginningButton,
+    el.jumpEndButton,
+    el.announcePositionButton,
+  ].forEach((btn) => (btn.disabled = !enabled));
+}
+
+function updatePlaybackStatusText() {
+  if (state.pendingRecording) {
+    el.playbackStatus.textContent = "Reviewing your unsaved recording. Not yet saved.";
+  } else if (state.selectedRecordingId) {
+    const record = state.library.find((r) => r.id === state.selectedRecordingId);
+    el.playbackStatus.textContent = record
+      ? `Selected for playback: ${record.name}.`
+      : "No recording selected for playback.";
+  } else {
+    el.playbackStatus.textContent = "No recording selected for playback.";
+  }
+}
+
+/** Reveal the name/notes form. Only happens once the user chooses to save. */
+function openSaveForm() {
   const profile = getProfileById(state.selectedProfileId);
   const defaultName = `${profile.name} – ${new Date().toLocaleDateString()}`;
 
-  el.saveDurationDescription.textContent = `Length: ${formatDurationNatural(durationSeconds)}.`;
+  el.savePanel.hidden = true;
+  el.saveForm.hidden = false;
   el.nameInput.value = defaultName;
   el.notesInput.value = "";
-  el.savePanel.hidden = false;
   el.nameInput.focus();
   el.nameInput.select();
 }
 
-function closeSavePanel() {
-  el.savePanel.hidden = true;
-  state.pendingRecording = null;
+function cancelSaveForm() {
+  el.saveForm.hidden = true;
+  el.savePanel.hidden = false;
+  el.saveButton.focus();
 }
 
-async function saveRecording() {
+async function confirmSave() {
   if (!state.pendingRecording) return;
 
   const profile = getProfileById(state.selectedProfileId);
   const { blob, durationSeconds } = state.pendingRecording;
 
   try {
-    await storage.saveRecording({
+    const saved = await storage.saveRecording({
       name: el.nameInput.value,
       durationSeconds,
       profileId: profile.id,
@@ -293,8 +351,17 @@ async function saveRecording() {
       blob,
     });
 
-    closeSavePanel();
+    state.pendingRecording = null;
+    // Keep the just-saved recording selected for playback, as requested,
+    // rather than clearing the playback selection.
+    state.selectedRecordingId = saved.id;
+
+    closeReviewPanel();
+    el.recordingStatus.textContent = "Not recording.";
+    el.startButton.disabled = false;
+    updatePlaybackStatusText();
     await refreshLibrary();
+
     announceStatus("Recording saved.");
     el.libraryContainer.setAttribute("tabindex", "-1");
     el.libraryContainer.focus();
@@ -303,11 +370,32 @@ async function saveRecording() {
   }
 }
 
+function recordAgain() {
+  if (!state.pendingRecording) return;
+
+  const confirmed = window.confirm("Record again and discard the current recording?");
+  if (!confirmed) return;
+
+  discardPendingRecording();
+  el.startButton.focus();
+}
+
 function discardRecording() {
-  closeSavePanel();
-  el.recordingStatus.textContent = "Recording discarded.";
+  discardPendingRecording();
   announceStatus("Recording discarded.");
   el.startButton.focus();
+}
+
+/** Shared cleanup for Record Again and Discard: drop the unsaved recording and return to ready-to-record. */
+function discardPendingRecording() {
+  state.pendingRecording = null;
+  closeReviewPanel();
+  playback.clear();
+  setPlaybackControlsEnabled(false);
+  updatePlaybackStatusText();
+  el.recordingStatus.textContent = "Not recording.";
+  el.startButton.disabled = false;
+  refreshLibrary();
 }
 
 // ---------------------------------------------------------------------
@@ -325,29 +413,28 @@ async function refreshLibrary() {
       onEditNotes: handleEditNotes,
       onDelete: handleDeleteRecording,
     },
-    state.selectedRecordingId
+    state.selectedRecordingId,
+    { disableSelection: !!state.pendingRecording }
   );
 }
 
 function handleSelectRecording(id) {
+  if (state.pendingRecording) {
+    // Defense in depth: the Select control is disabled in the library
+    // while there's an unsaved recording pending review, but guard here
+    // too in case this is ever reached another way.
+    announceAlert("Finish reviewing the current recording first — Save, Record Again, or Discard.");
+    return;
+  }
+
   const record = state.library.find((r) => r.id === id);
   if (!record) return;
 
   state.selectedRecordingId = id;
   playback.load(record.blob);
-
-  el.playbackStatus.textContent = `Selected for playback: ${record.name}.`;
+  setPlaybackControlsEnabled(true);
+  updatePlaybackStatusText();
   announceStatus(`${record.name} selected for playback.`);
-
-  [
-    el.playPauseButton,
-    el.restartButton,
-    el.skipBackwardButton,
-    el.skipForwardButton,
-    el.jumpBeginningButton,
-    el.jumpEndButton,
-    el.announcePositionButton,
-  ].forEach((btn) => (btn.disabled = false));
   el.playPauseButton.textContent = "Play (Ctrl+Alt+P)";
 
   refreshLibrary();
@@ -382,16 +469,8 @@ async function handleDeleteRecording(id, name) {
   if (state.selectedRecordingId === id) {
     state.selectedRecordingId = null;
     playback.clear();
-    el.playbackStatus.textContent = "No recording selected for playback.";
-    [
-      el.playPauseButton,
-      el.restartButton,
-      el.skipBackwardButton,
-      el.skipForwardButton,
-      el.jumpBeginningButton,
-      el.jumpEndButton,
-      el.announcePositionButton,
-    ].forEach((btn) => (btn.disabled = true));
+    setPlaybackControlsEnabled(false);
+    updatePlaybackStatusText();
   }
 
   await refreshLibrary();
@@ -404,7 +483,7 @@ async function handleDeleteRecording(id, name) {
 
 function togglePlayPause() {
   if (!playback.hasSource()) {
-    announceAlert("Select a recording from the library first.");
+    announceAlert("No recording is available for playback.");
     return;
   }
   const result = playback.togglePlayPause();
@@ -438,8 +517,11 @@ function bindStaticEventListeners() {
   el.pauseResumeButton.addEventListener("click", togglePauseResume);
   el.stopButton.addEventListener("click", stopRecording);
 
-  el.saveButton.addEventListener("click", saveRecording);
+  el.saveButton.addEventListener("click", openSaveForm);
+  el.recordAgainButton.addEventListener("click", recordAgain);
   el.discardButton.addEventListener("click", discardRecording);
+  el.confirmSaveButton.addEventListener("click", confirmSave);
+  el.cancelSaveButton.addEventListener("click", cancelSaveForm);
 
   el.playPauseButton.addEventListener("click", togglePlayPause);
   el.restartButton.addEventListener("click", () => {
@@ -482,6 +564,13 @@ function registerShortcutActions() {
       return { executed: true, resultText: "Stop Recording" };
     }
 
+    if (state.pendingRecording) {
+      return {
+        executed: false,
+        reason: "Finish reviewing the current recording first — Save, Record Again, or Discard.",
+      };
+    }
+
     if (el.startButton.disabled) {
       return { executed: false, reason: "Enable microphone access before recording." };
     }
@@ -498,8 +587,8 @@ function registerShortcutActions() {
   });
 
   registerAction("togglePlayPause", () => {
-    if (el.playPauseButton.disabled) {
-      return { executed: false, reason: "No recording is selected for playback." };
+    if (!playback.hasSource()) {
+      return { executed: false, reason: "No recording is available for playback." };
     }
     togglePlayPause();
     return { executed: true, resultText: "Play or Pause Playback" };

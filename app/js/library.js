@@ -2,7 +2,13 @@
 // Renders the Recording Library as a plain, semantic list — no waveform,
 // no visual timeline. Each recording is a list item with a heading, a
 // natural-language metadata description, and clearly labeled action
-// buttons (Select for Playback, Rename, Edit Notes, Delete).
+// buttons (Select for Playback, Rename, Edit Notes, Download, Delete).
+//
+// Every action button's accessible name includes the recording's own name
+// (e.g. "Select second test for playback", "Rename second test") so a
+// screen reader user browsing many controls in a row — or jumping to one
+// directly by name — always knows which recording a control belongs to.
+// Proximity to a heading is never relied on for this.
 
 import { getProfileById } from "./profiles.js";
 import { formatDurationNatural, formatDateNatural } from "./timeFormat.js";
@@ -12,8 +18,11 @@ import { formatDurationNatural, formatDateNatural } from "./timeFormat.js";
  * @param {Array} recordings - records from storage.listRecordings()
  * @param {Object} handlers - { onSelect(id), onRename(id), onEditNotes(id), onDelete(id) }
  * @param {string|null} selectedId - currently selected recording id, if any
+ * @param {Object} [options]
+ * @param {boolean} [options.disableSelection] - true while a recording is being reviewed/saved,
+ *   so the user must resolve it (Save/Record Again/Discard) before switching playback selection
  */
-export function renderLibrary(container, recordings, handlers, selectedId) {
+export function renderLibrary(container, recordings, handlers, selectedId, options = {}) {
   container.innerHTML = "";
 
   if (!recordings || recordings.length === 0) {
@@ -61,25 +70,29 @@ export function renderLibrary(container, recordings, handlers, selectedId) {
 
     const selectBtn = document.createElement("button");
     selectBtn.type = "button";
-    selectBtn.textContent = rec.id === selectedId ? "Selected for Playback" : "Select for Playback";
+    // The name stays constant regardless of selection state; aria-pressed
+    // alone communicates pressed/not pressed, matching how a screen reader
+    // announces a native toggle button.
+    selectBtn.textContent = `Select ${rec.name} for playback`;
     selectBtn.setAttribute("aria-pressed", rec.id === selectedId ? "true" : "false");
+    selectBtn.disabled = !!options.disableSelection;
     selectBtn.addEventListener("click", () => handlers.onSelect(rec.id));
     actions.appendChild(selectBtn);
 
     const renameBtn = document.createElement("button");
     renameBtn.type = "button";
-    renameBtn.textContent = "Rename";
+    renameBtn.textContent = `Rename ${rec.name}`;
     renameBtn.addEventListener("click", () => handlers.onRename(rec.id, rec.name));
     actions.appendChild(renameBtn);
 
     const notesBtn = document.createElement("button");
     notesBtn.type = "button";
-    notesBtn.textContent = "Edit Notes";
+    notesBtn.textContent = `Edit notes for ${rec.name}`;
     notesBtn.addEventListener("click", () => handlers.onEditNotes(rec.id, rec.notes));
     actions.appendChild(notesBtn);
 
     const downloadBtn = document.createElement("a");
-    downloadBtn.textContent = "Download";
+    downloadBtn.textContent = `Download ${rec.name}`;
     downloadBtn.href = URL.createObjectURL(rec.blob);
     downloadBtn.download = sanitizeFileName(rec.name) + extensionForMimeType(rec.mimeType);
     downloadBtn.className = "button-link";
@@ -87,7 +100,7 @@ export function renderLibrary(container, recordings, handlers, selectedId) {
 
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
-    deleteBtn.textContent = "Delete";
+    deleteBtn.textContent = `Delete ${rec.name}`;
     deleteBtn.addEventListener("click", () => handlers.onDelete(rec.id, rec.name));
     actions.appendChild(deleteBtn);
 

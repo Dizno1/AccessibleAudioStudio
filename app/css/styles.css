@@ -143,7 +143,8 @@ button:not(:disabled):hover,
   outline-offset: 2px;
 }
 
-.save-panel {
+.save-panel,
+.review-panel {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px dashed var(--color-border);
