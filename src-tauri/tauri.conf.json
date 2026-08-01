@@ -4,10 +4,10 @@
   "version": "1.0.0",
   "identifier": "org.opendoordesign.accessibleaudiostudio",
   "build": {
-    "frontendDist": "../",
+    "frontendDist": "../dist",
     "devUrl": null,
-    "beforeDevCommand": "",
-    "beforeBuildCommand": ""
+    "beforeDevCommand": "node scripts/prepare-dist.js",
+    "beforeBuildCommand": "node scripts/prepare-dist.js"
   },
   "app": {
     "windows": [

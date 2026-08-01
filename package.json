@@ -5,6 +5,7 @@
   "description": "Professional audio recording designed from the ground up for keyboard and screen reader users.",
   "scripts": {
     "tauri": "tauri",
+    "prepare:dist": "node scripts/prepare-dist.js",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build"
   },

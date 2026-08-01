@@ -80,15 +80,24 @@ Packages the exact same, unmodified web application from Phase 1 as a native Win
 - Application identity (name, publisher, version, description) set to match the spec exactly, in both `tauri.conf.json` and `Cargo.toml`.
 - A placeholder icon set (`src-tauri/icons/`) so the project builds out of the box — a simple microphone glyph, clearly flagged in the README as needing to be swapped for Open Door Design's real branding before a public release.
 - Root `package.json` with the Tauri CLI as its only dependency and `desktop:dev`/`desktop:build` scripts — the web app itself still requires no build step.
+- `scripts/prepare-dist.js` — copies `index.html` and `app/` into a gitignored `dist/` folder before every desktop dev/build run. `index.html` and `app/` at the repository root remain the single source of truth (what GitHub Pages serves); `dist/` is a disposable, always-fresh copy, never hand-edited.
 - `Release/` folder with a README documenting exactly what installer files belong there and a pre-publish testing checklist.
 - `README.md` updated with full build prerequisites, build/release commands, icon-replacement notes, and a documented GitHub Releases process.
 - `.github/workflows/build-windows.yml` — a GitHub Actions workflow that builds the actual installers on a real, GitHub-hosted Windows machine (`windows-latest`) and, on a version-tag push, opens a draft GitHub Release with them attached automatically. This is the recommended path to a real installer, since it needs no local Windows machine.
 
+### Fixed — `frontendDist` build failure
+
+The first real GitHub Actions build attempt failed immediately with a Tauri configuration error: `frontendDist` was set to `"../"` (the repository root), and Tauri correctly refused to bundle a frontend directory that also contained `src-tauri/`, `node_modules/`, and other non-web-asset folders.
+
+Root cause: the initial packaging pass pointed `frontendDist` straight at the repository root instead of an isolated folder, since the app has no build step and everything needed (`index.html`, `app/`) already lived there. That convenience is exactly what the error was catching.
+
+Fix: `frontendDist` now points at a dedicated `dist/` folder (`"../dist"` in `src-tauri/tauri.conf.json`), populated by `scripts/prepare-dist.js` immediately before every `tauri dev`/`tauri build` run via the `beforeDevCommand`/`beforeBuildCommand` hooks. `dist/` contains only `index.html` and `app/` — nothing else — and is regenerated fresh every time rather than committed, so there's no second copy of the app to keep in sync by hand. GitHub Pages is unaffected: it still serves `index.html`/`app/` directly from the repository root, unchanged.
+
 ### Not done — a real installer has never been built
 
-**No `.msi` or `.exe` exists yet, anywhere.** Two build attempts were made in this project's development environment (a Linux sandbox with no Rust toolchain and no network access to install one); both correctly concluded that a real Windows installer cannot be produced there, and neither fabricated placeholder or fake binary files to paper over that — a fake `.msi` would be worse than no `.msi` at all. Tauri's Windows installer targets require Windows itself to build.
+**No `.msi` or `.exe` exists yet, anywhere.** Multiple build attempts have been made in this project's development environment (a Linux sandbox with no Rust toolchain and no network access to install one); all correctly concluded that a real Windows installer cannot be produced there, and none fabricated placeholder or fake binary files to paper over that — a fake `.msi` would be worse than no `.msi` at all. Tauri's Windows installer targets require Windows itself to build.
 
-The `.github/workflows/build-windows.yml` workflow above exists specifically to close this gap without requiring anyone to own a Windows dev machine: pushing a version tag runs a genuine build on a genuine Windows VM and produces genuine installer files. **That workflow has not yet been executed** (running it requires pushing to an actual GitHub repository, which this development environment also can't do). The concrete next action is to push this repository to GitHub and either push a tag or trigger the workflow manually — see `README.md`, "Building the Windows Application," and `Release/README.md`.
+The `.github/workflows/build-windows.yml` workflow exists specifically to close this gap without requiring anyone to own a Windows dev machine: pushing a version tag runs a genuine build on a genuine Windows VM and produces genuine installer files. The first real run of that workflow failed with the `frontendDist` error described above — now fixed. **The workflow has not yet been re-run since the fix**, so it still hasn't successfully produced installer files. The concrete next action is the same as before: push this repository (with the fix) to GitHub and either push a tag or trigger the workflow manually — see `README.md`, "Building the Windows Application," and `Release/README.md`.
 
 Until a build has actually run and the result has been installed and tested on real Windows with a real screen reader, treat Phase 2 as configured but unverified — not done.
 
