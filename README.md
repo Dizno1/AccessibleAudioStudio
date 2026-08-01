@@ -4,9 +4,11 @@ A professional, browser-based audio recording environment designed from the grou
 
 Accessibility is not a layer added on top here. It is the architecture. See `docs/Screen Reader First Principles.md` for the non-negotiable rules every feature follows, and `docs/Vision.md` for the long-term direction.
 
-## Status: Phase 1 complete
+## Status: Version 1.0 (web) complete; Windows packaging configured
 
-Phase 1 objective: allow a user to confidently create a high-quality recording, entirely from the keyboard, entirely through a screen reader.
+Phase 1 objective: allow a user to confidently create a high-quality recording, entirely from the keyboard, entirely through a screen reader. That objective is met, and the browser-based application is considered feature-complete for Version 1.0.
+
+Phase 2 packages this same, unmodified application as a native Windows desktop application using Tauri — see "Building the Windows Application" below.
 
 A user can currently:
 
@@ -57,6 +59,17 @@ docs/
   Screen Reader First Principles.md
   Recording Profiles.md
   Roadmap.md
+src-tauri/                 Windows desktop packaging (Tauri) -- see "Building the Windows Application"
+  Cargo.toml               Rust package manifest
+  tauri.conf.json          Window, bundle, and installer configuration
+  build.rs                 Required Tauri build script
+  src/main.rs              Application entry point (hosts the existing web app; no app logic of its own)
+  capabilities/            Tauri v2 permissions -- minimal, since this app calls no Tauri commands
+  icons/                   App icon set (placeholder -- see note below)
+.github/workflows/
+  build-windows.yml        Builds the real .msi/.exe on a GitHub-hosted Windows runner -- see "Building the Windows Application"
+package.json                Holds only the Tauri CLI dev dependency and desktop build scripts
+Release/                   Built Windows installers go here before publishing (empty until a build -- local or CI -- has actually run)
 audio/                     Reserved for future local export/output use
 assets/                    Reserved for future static assets
 tests/                     Reserved for future automated tests
@@ -80,6 +93,110 @@ AccessibleAudioStudio speaks only when there's something the user needs to know 
 
 It also keeps its hands off keyboard focus and the DOM once something's underway: the Start/Stop control is one button that relabels itself rather than two buttons swapped via disable/enable, the microphone and profile selectors stay enabled through a recording instead of being disabled and yanking focus away, and the Recording Library updates existing elements in place instead of rebuilding itself. Disabling or recreating whatever control currently has focus is what was actually causing most of the extra chatter reported during testing -- not the application's own announcements, but the browser and screen reader reacting to focus getting kicked around. See `docs/Screen Reader First Principles.md`, "Silence Is an Accessibility Feature," for the full policy.
 
+## Building the Windows Application
+
+AccessibleAudioStudio's browser-based application (`index.html` and `app/`) is packaged as a native Windows desktop app using [Tauri](https://tauri.app/), which hosts the existing, completely unmodified web app inside a native window using Windows' built-in WebView2 runtime -- no Electron, no Chromium bundled into the app, no rewrite. The HTML, CSS, JavaScript, and all accessibility and keyboard behavior are identical to the browser version.
+
+> **This repository includes the complete Tauri packaging configuration (`src-tauri/`), but not a pre-built installer.** A real `.msi`/`.exe` can only be produced by actually running the build on Windows -- there is no way around that. The recommended way to do this is the automated GitHub Actions build below, which needs no local Windows machine at all. See `Release/README.md` for the full walkthrough either way.
+
+### Recommended: automated build via GitHub Actions
+
+`.github/workflows/build-windows.yml` builds the real installers on a genuine Windows machine (a GitHub-hosted `windows-latest` runner) automatically:
+
+- **Push a version tag** (e.g. `git tag v1.0.0 && git push origin v1.0.0`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
+- **Or run it manually** from the Actions tab ("Build Windows Installer" > "Run workflow") to just build and download the installers as workflow artifacts, without creating a release -- useful while testing a change.
+
+This is a real build on a real Windows machine every time -- not a simulation. See `Release/README.md` for the full step-by-step.
+
+### Alternative: build locally on Windows
+
+If you'd rather build on your own Windows machine instead:
+
+### Prerequisites
+
+1. **Windows 10 or 11** (64-bit). Tauri's Windows target builds and runs on Windows; cross-compiling from Linux/macOS is possible but not covered here -- build on Windows directly for the simplest, most reliable result.
+2. **WebView2 Runtime.** Windows 11 and recent Windows 10 updates include this already. If it's missing, install it from [Microsoft's WebView2 page](https://developer.microsoft.com/microsoft-edge/webview2/) -- Tauri's installer can also be configured to fetch it automatically, but having it present on the build machine avoids surprises.
+3. **Rust.** Install via [rustup](https://rustup.rs/):
+   ```
+   winget install Rustlang.Rustup
+   ```
+   or download and run `rustup-init.exe` from rustup.rs. Accept the default installation. Then restart your terminal and confirm:
+   ```
+   rustc --version
+   cargo --version
+   ```
+4. **Microsoft C++ Build Tools.** Rust on Windows needs the MSVC linker. Install the "Desktop development with C++" workload from the [Visual Studio Build Tools installer](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (you don't need full Visual Studio, just this workload).
+5. **WiX Toolset v3** (for the `.msi`). Tauri's `msi` bundler needs this:
+   ```
+   winget install WiXToolset.WiX
+   ```
+   The `.exe` (NSIS) target doesn't need WiX -- it's independent, so you can build one, the other, or both.
+6. **Node.js** (LTS, 18+) -- only used to run the Tauri CLI via `npm`, not to build the web app itself (which still has no build step):
+   ```
+   winget install OpenJS.NodeJS.LTS
+   ```
+
+### Build commands
+
+From the repository root, in a terminal on the Windows build machine:
+
+```
+npm install
+npm run desktop:dev
+```
+
+`npm install` fetches only the Tauri CLI (`@tauri-apps/cli`). `desktop:dev` launches the app in a live Tauri window for testing -- this is the fastest way to confirm microphone access, keyboard shortcuts, and screen reader behavior all work identically to the browser before producing an installer.
+
+### Release commands
+
+```
+npm run desktop:build
+```
+
+This compiles the Rust host application and produces the configured bundles. On success, look in:
+
+```
+src-tauri\target\release\bundle\msi\      <- the .msi installer
+src-tauri\target\release\bundle\nsis\     <- the .exe setup file
+```
+
+Copy whichever files were produced into the `Release/` folder at the repository root (see `Release/README.md`) before publishing.
+
+The first build will take several minutes (Rust compiles the whole dependency tree from scratch); subsequent builds are much faster.
+
+### About the app icon
+
+`src-tauri/icons/` currently contains a simple placeholder icon (a white microphone glyph on a dark blue rounded square) so the build works out of the box. Replace these files with Open Door Design's actual icon before shipping a public release -- keep the same filenames (`32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.ico`) or update the `icon` list in `src-tauri/tauri.conf.json` to match new ones. `icon.ico` needs to be a proper multi-resolution Windows icon (16, 24, 32, 48, 64, 128, 256 px) for the Start Menu, taskbar, and installer to all look correct.
+
+### Application identity
+
+These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`; update both together if any of these change:
+
+| Field | Value |
+|---|---|
+| Application name | AccessibleAudioStudio |
+| Publisher | Open Door Design |
+| Version | 1.0.0 |
+| Description | Professional audio recording designed from the ground up for keyboard and screen reader users. |
+
+### What the packaging preserves
+
+- **Window:** titled "AccessibleAudioStudio," 1000×800 default, resizable, 700×500 minimum, centered on first launch. Size and position from the previous session are restored automatically on later launches (via `tauri-plugin-window-state`), and saved again as the window is moved, resized, or closed.
+- **No browser chrome:** Tauri windows never have tabs, an address bar, or browser menus -- there's no browser present to have any, unlike wrapping the app in an actual browser window. Devtools are available in development builds for troubleshooting and automatically stripped from release builds.
+- **Microphone access, keyboard shortcuts, and screen reader accessibility:** all provided by WebView2 running the exact same `index.html`/`app/` as the browser version, so this behavior doesn't need to be (and wasn't) reimplemented.
+- **Installer behavior:** both the `.msi` and the `.exe` (NSIS) create Start Menu shortcuts and register the app with Windows so it appears in, and can be removed from, Settings > Apps, the standard uninstall path. A desktop shortcut is offered as an option during NSIS setup.
+
+## GitHub Releases
+
+Pushing a version tag (`git tag v1.0.0 && git push origin v1.0.0`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. What's left to do by hand:
+
+1. After the workflow finishes, open the draft release on GitHub (Releases tab).
+2. Confirm the title is clear, e.g. "AccessibleAudioStudio 1.0.0 (Windows)," and adjust if needed.
+3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing.
+4. Write release notes covering what's new or changed since the last release, any known issues, and which Windows versions were tested.
+5. Publish the release. Keep every previous release's assets attached to its own tagged release rather than overwriting them, so there's a complete version history to link back to or roll back to if needed.
+6. The published release's asset URLs (e.g. `.../releases/download/v1.0.0/AccessibleAudioStudio_1.0.0_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
+
 ## Recommended next phase
 
-Phase 2 -- editing foundations (trimming and markers), built non-destructively on top of the original recording. See `docs/Roadmap.md` for details.
+Immediately: push this repository to GitHub and push a version tag (or run the workflow manually) to produce the actual installers via `.github/workflows/build-windows.yml` -- this hasn't been done yet (see `Release/README.md`), and it's the only way real installer files come into existence. Test the result on a real Windows machine with a screen reader before publishing. After that, the next feature phase is editing foundations (trimming and markers), built non-destructively on top of the original recording. See `docs/Roadmap.md` for details.

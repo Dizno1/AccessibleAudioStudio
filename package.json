@@ -1,0 +1,14 @@
+{
+  "name": "accessibleaudiostudio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Professional audio recording designed from the ground up for keyboard and screen reader users.",
+  "scripts": {
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

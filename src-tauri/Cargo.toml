@@ -1,0 +1,32 @@
+[package]
+name = "accessibleaudiostudio"
+version = "1.0.0"
+description = "Professional audio recording designed from the ground up for keyboard and screen reader users."
+authors = ["Open Door Design"]
+edition = "2021"
+rust-version = "1.77"
+
+# See https://tauri.app/v1/api/config/ / https://v2.tauri.app for reference.
+# This crate only hosts the existing browser-based AccessibleAudioStudio (see
+# ../index.html and ../app/) inside a native Windows window. It intentionally
+# contains no application logic of its own — the HTML/CSS/JS is unmodified.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "accessibleaudiostudio"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

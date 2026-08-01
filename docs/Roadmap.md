@@ -1,8 +1,8 @@
 # Roadmap
 
-## Status: Phase 1 complete, plus two accessibility refinement passes
+## Status: Phase 1 (web) complete, plus two accessibility refinement passes; Phase 2 (Windows packaging) configured, not yet built
 
-Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible recording foundation. Nothing beyond recording, playback, and library management is in scope yet — by design. Two follow-up refinement passes (below) corrected a real keyboard-shortcut bug, substantially reduced how much the application speaks automatically, and eliminated focus/DOM instability that was causing extra screen-reader chatter beyond the application's own announcements.
+Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible recording foundation and is considered feature-complete for Version 1.0. Two follow-up refinement passes (below) corrected a real keyboard-shortcut bug, substantially reduced how much the application speaks automatically, and eliminated focus/DOM instability that was causing extra screen-reader chatter beyond the application's own announcements. Phase 2 packages this same, unmodified application as a native Windows desktop app.
 
 ### Completed in Phase 1
 
@@ -66,16 +66,42 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 - Rename and notes editing currently use the browser's native prompt dialog for simplicity; a fully in-page accessible form may replace this in a later phase if user feedback calls for it.
 - Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. Two related root causes have since been fixed (the `<select>` suppression bug, and disabling controls that could hold focus), which plausibly explains the original report — but it hasn't been explicitly retested since these fixes landed. Worth confirming with the Keyboard Shortcut Diagnostics panel.
 
+## Phase 2: Windows Packaging (Tauri)
+
+Packages the exact same, unmodified web application from Phase 1 as a native Windows desktop app, using Tauri to host it in Windows' built-in WebView2 runtime rather than a browser tab. See `README.md`, "Building the Windows Application," for full instructions.
+
+### Completed
+
+- `src-tauri/` — complete Tauri v2 project: `Cargo.toml`, `tauri.conf.json`, `build.rs`, `src/main.rs`, and a minimal `capabilities/default.json` (this app calls no Tauri commands at all — microphone, recording, playback, and storage are all standard web APIs the WebView2 runtime provides directly, so almost no Tauri permissions are needed).
+- Window configured per the spec: titled "AccessibleAudioStudio," 1000×800 default, 700×500 minimum, resizable, centered on first launch.
+- Size and position persistence across launches via `tauri-plugin-window-state`, rather than custom code.
+- No browser chrome by construction (Tauri windows never have tabs/address bar/menus — there's no browser present to have them), and devtools are stripped automatically from release builds.
+- Bundle configuration for both a `.msi` (WiX) and a `.exe` (NSIS) installer, both configured to create Start Menu shortcuts, register normally with Windows, and support uninstall through Windows Settings; NSIS additionally offers an optional desktop shortcut during setup.
+- Application identity (name, publisher, version, description) set to match the spec exactly, in both `tauri.conf.json` and `Cargo.toml`.
+- A placeholder icon set (`src-tauri/icons/`) so the project builds out of the box — a simple microphone glyph, clearly flagged in the README as needing to be swapped for Open Door Design's real branding before a public release.
+- Root `package.json` with the Tauri CLI as its only dependency and `desktop:dev`/`desktop:build` scripts — the web app itself still requires no build step.
+- `Release/` folder with a README documenting exactly what installer files belong there and a pre-publish testing checklist.
+- `README.md` updated with full build prerequisites, build/release commands, icon-replacement notes, and a documented GitHub Releases process.
+- `.github/workflows/build-windows.yml` — a GitHub Actions workflow that builds the actual installers on a real, GitHub-hosted Windows machine (`windows-latest`) and, on a version-tag push, opens a draft GitHub Release with them attached automatically. This is the recommended path to a real installer, since it needs no local Windows machine.
+
+### Not done — a real installer has never been built
+
+**No `.msi` or `.exe` exists yet, anywhere.** Two build attempts were made in this project's development environment (a Linux sandbox with no Rust toolchain and no network access to install one); both correctly concluded that a real Windows installer cannot be produced there, and neither fabricated placeholder or fake binary files to paper over that — a fake `.msi` would be worse than no `.msi` at all. Tauri's Windows installer targets require Windows itself to build.
+
+The `.github/workflows/build-windows.yml` workflow above exists specifically to close this gap without requiring anyone to own a Windows dev machine: pushing a version tag runs a genuine build on a genuine Windows VM and produces genuine installer files. **That workflow has not yet been executed** (running it requires pushing to an actual GitHub repository, which this development environment also can't do). The concrete next action is to push this repository to GitHub and either push a tag or trigger the workflow manually — see `README.md`, "Building the Windows Application," and `Release/README.md`.
+
+Until a build has actually run and the result has been installed and tested on real Windows with a real screen reader, treat Phase 2 as configured but unverified — not done.
+
 ## Planned future phases (not yet scheduled)
 
 These are directional, not committed:
 
-- **Phase 2 — Editing foundations:** trimming, markers (previous/next/insert), non-destructive edit history, still screen-reader-first with no waveform interaction required.
-- **Phase 3 — Transcription:** on-device or opt-in cloud transcription, transcript displayed and navigable as text.
-- **Phase 4 — Audio enhancement:** normalization, noise reduction as an explicit, reviewable action (never automatic/invisible).
-- **Phase 5 — VoiceOfOpenDoor integration:** connecting recorded material to Open Door Design's synthetic voice project where relevant.
+- **Phase 3 — Editing foundations:** trimming, markers (previous/next/insert), non-destructive edit history, still screen-reader-first with no waveform interaction required.
+- **Phase 4 — Transcription:** on-device or opt-in cloud transcription, transcript displayed and navigable as text.
+- **Phase 5 — Audio enhancement:** normalization, noise reduction as an explicit, reviewable action (never automatic/invisible).
+- **Phase 6 — VoiceOfOpenDoor integration:** connecting recorded material to Open Door Design's synthetic voice project where relevant.
 - **Ongoing — Customizable shortcuts:** a settings UI reading and writing the shortcut configuration described above.
 
 ## Recommended next phase
 
-**Phase 2: Editing foundations (trimming and markers)**, building directly on the reserved shortcut actions and the "Preserve Original Recordings" principle — edits should be represented as non-destructive instructions layered on top of the original audio, never as in-place modification of the saved recording.
+**Immediately: push this repository to GitHub and run the Windows build workflow** (tag push or manual trigger — see `README.md`, "Building the Windows Application") to produce the first real installer files, then run through `Release/README.md`'s pre-publish checklist — including a real screen reader pass — before treating Phase 2 as done. After that, **Phase 3: Editing foundations (trimming and markers)**, building directly on the reserved shortcut actions and the "Preserve Original Recordings" principle — edits should be represented as non-destructive instructions layered on top of the original audio, never as in-place modification of the saved recording.
