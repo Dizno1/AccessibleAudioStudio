@@ -38,5 +38,7 @@ Exact filenames depend on the Tauri/WiX/NSIS versions used at build time -- chec
 ## Before publishing a release
 
 - Confirm the version in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` matches the release you're cutting.
+- Confirm `--color-accent` in `app/css/styles.css` is the actual approved Open Door green, not the placeholder value — see `docs/Roadmap.md`, "Design-Standards Compliance Review."
 - Install the generated `.msi` (or `.exe`) on an actual Windows machine (a fresh VM is ideal) and confirm, in order: it installs and appears in the Start Menu; it launches; microphone access works; a recording can be started, stopped, and played back; a saved recording appears correctly in the Recording Library; Ctrl+Alt+R and Ctrl+Alt+P both work; the app is fully keyboard and screen-reader navigable (JAWS and/or NVDA); and uninstalling through Windows Settings removes it completely.
+- Run the design-standards testing gaps that couldn't be verified without a real browser/display in front of them: an automated accessibility check (axe or Lighthouse), 400% zoom, 320px/280px CSS reflow, Windows forced-colors/high-contrast mode, and a pass with Narrator and/or VoiceOver and in Edge/Firefox if those are in scope. See `docs/Roadmap.md`, "Design-Standards Compliance Review," for the full list.
 - See `README.md`, "GitHub Releases," for how to publish these files alongside release notes and version history.

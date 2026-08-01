@@ -17,7 +17,7 @@ import { PROFILES, getProfileById, DEFAULT_PROFILE_ID } from "./profiles.js";
 import { RecordingEngine, RecordingState } from "./recordingEngine.js";
 import { PlaybackController } from "./playback.js";
 import * as storage from "./storage.js";
-import { renderLibrary } from "./library.js";
+import { renderLibrary, focusRecordingHeading } from "./library.js";
 import { formatDurationNatural } from "./timeFormat.js";
 import { initShortcutService, registerAction } from "./shortcutService.js";
 import { onShortcutEvent, getLastShortcutEvent } from "./shortcutDiagnostics.js";
@@ -365,8 +365,7 @@ async function confirmSave() {
     await refreshLibrary();
 
     announceStatus("Recording saved.");
-    el.libraryContainer.setAttribute("tabindex", "-1");
-    el.libraryContainer.focus();
+    focusRecordingHeading(saved.id);
   } catch (err) {
     announceAlert("The recording could not be saved. " + describeError(err));
   }

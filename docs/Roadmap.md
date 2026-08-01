@@ -63,8 +63,33 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 - Audio format depends on what the browser's `MediaRecorder` supports (typically WebM/Opus in Chrome, Edge, and Firefox). No server-side transcoding exists yet.
 - No editing, trimming, or markers — intentionally deferred.
 - No transcription, AI features, cloud sync, or VoiceOfOpenDoor integration — intentionally deferred.
-- Rename and notes editing currently use the browser's native prompt dialog for simplicity; a fully in-page accessible form may replace this in a later phase if user feedback calls for it.
 - Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. Two related root causes have since been fixed (the `<select>` suppression bug, and disabling controls that could hold focus), which plausibly explains the original report — but it hasn't been explicitly retested since these fixes landed. Worth confirming with the Keyboard Shortcut Diagnostics panel.
+
+## Design-Standards Compliance Review
+
+An audit against Open Door Design's actual standards found that the CSS in this app was never checked against the DesignPhilosophyAndStandards repository during Phase 1 — it used an arbitrary blue accent color chosen independently, in direct conflict with the standing instruction to treat that repository as the design/accessibility authority for every Open Door Design project, including its blue-and-green color-pairing guardrail. That's a real process miss, not a stylistic judgment call, and it's recorded here as one.
+
+### Fixed
+
+- **Color:** `--color-accent` changed from blue (`#1c4e80`) to green (`#1b5e20`), used consistently for primary buttons, button-links, focus outlines, and the selected-recording border. Verified at ~7.9:1 contrast against white (comfortably past AA). **This is a placeholder, not the actual approved Open Door green** — this development environment has no access to fetch the real token from the DesignPhilosophyAndStandards repository. Replace `--color-accent` in `app/css/styles.css` with the real value and re-verify contrast once available.
+- **Touch targets:** buttons, button-links, and form controls now have `min-height`/`min-width: 3rem` (48px), matching the standing 3rem touch-target standard (stricter than the 44px/48px range a design review suggested, and used instead of it).
+- **Post-save focus target:** after saving, focus now moves to the saved recording's own heading in the library (a real, named element — e.g. "Quick Note – 8/1/2026") instead of an empty generic container. The previous approach technically worked (a `tabindex="-1"` was set immediately before the `.focus()` call), but landing on content with no accessible name of its own wasn't a meaningful destination.
+- **Page title:** changed from `AccessibleAudioStudio` to `Audio Recording - AccessibleAudioStudio`, per the Application Structure Standard's page-name-first convention. The installed desktop app's window title is unaffected (still "AccessibleAudioStudio" — see `src-tauri/tauri.conf.json`).
+- **Reduced motion and forced-colors:** added a `prefers-reduced-motion` reset (defensive — there's no motion in the app currently, but this closes the gap for anything added later) and an explicit `forced-colors: active` rule keeping the focus outline and selected-recording border visible under Windows High Contrast rather than relying on their default color-based rendering alone.
+- Disabled-control text darkened slightly (`#666` → `#595959`) for a more comfortable ~5.3:1 contrast, even though WCAG doesn't require AA contrast for disabled controls.
+
+### Accepted for Version 1.0, not fixed
+
+- **Native browser dialogs** (`window.prompt`/`window.confirm` for Rename, Edit Notes, Delete, Record Again) don't fully follow the documented Open Door Dialog Pattern (named application dialog, predictable focus return, Escape behavior, reflow/zoom support, consistent Open Door styling). Explicitly accepted as a Version 1.0 limitation rather than a blocker — a future maintenance release could replace them with an accessible in-app dialog component.
+
+### Still open — requires real-environment testing this text-based environment cannot perform
+
+- Automated accessibility checks (axe, Lighthouse, etc.)
+- 400% zoom and 320px/280px CSS reflow
+- Windows forced-colors / high-contrast mode (the CSS change above is a starting point, not a verified pass)
+- Narrator, VoiceOver (if mobile use is expected), and cross-browser testing in Edge and Firefox (JAWS/NVDA/Chrome have been tested)
+
+None of these are confirmed defects — they're gaps in what could be verified without a real browser, a real screen reader, and a real display in front of them, exactly as flagged in the review that prompted this pass. They belong in the pre-publish checklist in `Release/README.md` alongside the existing Windows-installer testing steps.
 
 ## Phase 2: Windows Packaging (Tauri)
 
@@ -113,4 +138,4 @@ These are directional, not committed:
 
 ## Recommended next phase
 
-**Immediately: push this repository to GitHub and run the Windows build workflow** (tag push or manual trigger — see `README.md`, "Building the Windows Application") to produce the first real installer files, then run through `Release/README.md`'s pre-publish checklist — including a real screen reader pass — before treating Phase 2 as done. After that, **Phase 3: Editing foundations (trimming and markers)**, building directly on the reserved shortcut actions and the "Preserve Original Recordings" principle — edits should be represented as non-destructive instructions layered on top of the original audio, never as in-place modification of the saved recording.
+**Immediately: supply the actual approved green token (and any other CSS values worth double-checking) from the DesignPhilosophyAndStandards repository**, so `--color-accent` in `app/css/styles.css` can be corrected from its current placeholder. In parallel, **push this repository to GitHub and run the Windows build workflow** (tag push or manual trigger — see `README.md`, "Building the Windows Application") to produce the first real installer files, then run through `Release/README.md`'s pre-publish checklist — including the design-standards testing gaps above and a real screen reader pass — before treating Phase 2 as done. After that, **Phase 3: Editing foundations (trimming and markers)**, building directly on the reserved shortcut actions and the "Preserve Original Recordings" principle — edits should be represented as non-destructive instructions layered on top of the original audio, never as in-place modification of the saved recording.

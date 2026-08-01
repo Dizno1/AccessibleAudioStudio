@@ -212,3 +212,22 @@ function extensionForMimeType(mimeType) {
   if (mimeType.includes("mp4")) return ".m4a";
   return ".audio";
 }
+
+/**
+ * Move focus to a specific recording's own heading in the library. Used
+ * after an action like Save completes, so focus lands on a real, named,
+ * meaningful element ("Quick Note – 8/1/2026") rather than an empty
+ * generic container that happens to have been made focusable. The
+ * heading is given tabindex="-1" the first time this is called so it
+ * becomes a valid, if unusual, focus target without being reachable by
+ * ordinary Tab navigation.
+ */
+export function focusRecordingHeading(id) {
+  const refs = itemRefs.get(id);
+  if (!refs) return false;
+  if (!refs.heading.hasAttribute("tabindex")) {
+    refs.heading.setAttribute("tabindex", "-1");
+  }
+  refs.heading.focus();
+  return true;
+}

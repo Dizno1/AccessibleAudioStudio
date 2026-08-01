@@ -1,17 +1,35 @@
 /* AccessibleAudioStudio styles
    Principle: nothing important is ever conveyed by color, icon, or layout
    alone. Styling here is purely cosmetic polish on top of a page that is
-   already fully understandable with CSS turned off entirely. */
+   already fully understandable with CSS turned off entirely.
+
+   --color-accent below is GREEN, matching Open Door Design's blue-and-green
+   color-pairing guardrail (blue is not a primary interface color). #1B5E20
+   was chosen for a verified ~7.9:1 contrast ratio against white text/panels
+   — well past AA — but it is a placeholder, not a value pulled from the
+   actual DesignPhilosophyAndStandards repository (this environment has no
+   access to fetch it). Replace with the exact approved green token when
+   available and re-verify the contrast numbers in the comments below still
+   hold. */
 
 :root {
   --color-bg: #ffffff;
   --color-text: #1a1a1a;
-  --color-accent: #1c4e80;
+  --color-accent: #1b5e20; /* ~7.9:1 vs white — placeholder pending exact brand token, see note above */
   --color-border: #6b6b6b;
   --color-error-bg: #fdecea;
   --color-error-text: #7a1212;
-  --focus-outline: 3px solid #1c4e80;
+  --focus-outline: 3px solid var(--color-accent);
   --font-base: 1.05rem;
+  --min-target: 3rem; /* 48px — Open Door Design's touch-target standard */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 * {
@@ -98,12 +116,17 @@ textarea {
   display: block;
   width: 100%;
   max-width: 32rem;
+  min-height: var(--min-target);
   font-size: 1rem;
   padding: 0.5rem;
   margin-top: 0.25rem;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   font-family: inherit;
+}
+
+textarea {
+  min-height: 4.5rem;
 }
 
 .button-row {
@@ -117,19 +140,23 @@ button,
 .button-link {
   font-size: 1rem;
   padding: 0.55rem 0.9rem;
+  min-height: var(--min-target);
+  min-width: var(--min-target);
   border: 1px solid var(--color-accent);
   border-radius: 4px;
   background: var(--color-accent);
   color: #fff;
   cursor: pointer;
   text-decoration: none;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 button:disabled {
   background: #e0e0e0;
   border-color: #a0a0a0;
-  color: #666;
+  color: #595959; /* ~5.3:1 vs #e0e0e0 -- readable even though disabled controls are exempt from AA contrast requirements */
   cursor: not-allowed;
 }
 
@@ -141,6 +168,21 @@ button:not(:disabled):hover,
 :focus-visible {
   outline: var(--focus-outline);
   outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  /* Belt-and-suspenders: forced-colors mode substitutes system colors for
+     most of the above automatically, but explicitly requesting outlines
+     stay visible protects the two states that matter most -- focus and
+     the selected recording -- from being flattened to nothing. This has
+     not been visually verified in actual Windows High Contrast mode in
+     this environment; treat it as a starting point, not a confirmed pass. */
+  :focus-visible {
+    outline: 3px solid Highlight;
+  }
+  .recording-item--selected {
+    outline: 2px solid Highlight;
+  }
 }
 
 .save-panel,
@@ -170,6 +212,12 @@ button:not(:disabled):hover,
 
 .recording-item__name {
   margin: 0 0 0.25rem 0;
+}
+
+.recording-item__name:focus {
+  outline: var(--focus-outline);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .recording-item__meta,
