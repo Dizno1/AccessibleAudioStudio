@@ -75,7 +75,15 @@ export function registerAction(action, handler) {
 function isEditableTarget(target) {
   if (!target) return false;
   const tag = target.tagName ? target.tagName.toLowerCase() : "";
-  if (tag === "input" || tag === "textarea" || tag === "select") return true;
+  // Only literal text-entry controls need protection so normal typing (and
+  // AltGr-style Ctrl+Alt character combos on some keyboard layouts) is
+  // never interrupted. A <select> has no typing to protect — arrowing
+  // through its options doesn't use Ctrl+Alt+<letter> — so shortcuts must
+  // keep working while focus is on one. Suppressing them there was
+  // effectively random: whichever control the user happened to have
+  // focused (often a select, right after choosing a microphone or
+  // profile) silently swallowed the next shortcut.
+  if (tag === "input" || tag === "textarea") return true;
   if (target.isContentEditable) return true;
   return false;
 }

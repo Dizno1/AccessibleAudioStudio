@@ -70,9 +70,13 @@ tests/                     Reserved for future automated tests
 | Ctrl+Alt+Space | Pause or Resume Recording |
 | Ctrl+Alt+P | Play or Pause the current unsaved recording, or the saved recording selected in the library if there is no unsaved recording |
 
-Shortcuts are suspended while typing in a text field. Every visible button remains fully functional at all times -- shortcuts are a supplement, never a replacement.
+Shortcuts are suspended while focus is in a text field (typing an input or textarea) — not while focus is on a dropdown like the microphone or profile selector, since there's no typing to protect there. Every visible button remains fully functional at all times -- shortcuts are a supplement, never a replacement.
 
 If a shortcut doesn't seem to work, the "Keyboard Shortcut Diagnostics" panel at the bottom of the page reports the last shortcut the app detected and what happened as a result -- useful for telling apart a keystroke that never reached the app from one that reached it but had nothing to do yet.
+
+## A quiet application
+
+AccessibleAudioStudio speaks only when there's something the user needs to know right now -- state changes like "Recording started," "Playback paused," or an error -- never continuously and never to narrate things a screen reader will already announce on its own (like a button's own pressed state) or that are better left as text the user can read on demand. See `docs/Screen Reader First Principles.md`, "Silence Is an Accessibility Feature," for the full policy.
 
 ## Recommended next phase
 

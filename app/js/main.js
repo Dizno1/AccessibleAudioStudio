@@ -156,7 +156,6 @@ async function handleEnableMicrophone() {
 
     el.micSelection.hidden = false;
     el.micStatus.textContent = `Microphone access granted. ${state.microphones.length} microphone${state.microphones.length === 1 ? "" : "s"} found. Ready to record.`;
-    announceStatus("Microphone ready.");
     el.startButton.disabled = false;
   } catch (err) {
     el.micStatus.textContent = "Microphone access was not granted.";
@@ -282,7 +281,7 @@ function openReviewPanel(durationSeconds) {
   updatePlaybackStatusText();
   refreshLibrary();
 
-  announceStatus("Recording stopped. Ready for review.");
+  announceStatus("Recording stopped.");
   el.playPauseButton.focus();
 }
 
@@ -434,14 +433,16 @@ function handleSelectRecording(id) {
   playback.load(record.blob);
   setPlaybackControlsEnabled(true);
   updatePlaybackStatusText();
-  announceStatus(`${record.name} selected for playback.`);
   el.playPauseButton.textContent = "Play (Ctrl+Alt+P)";
 
   refreshLibrary();
 }
 
-async function handleRenameRecording(id, currentName) {
-  const newName = window.prompt("Rename recording:", currentName);
+async function handleRenameRecording(id) {
+  const record = state.library.find((r) => r.id === id);
+  if (!record) return;
+
+  const newName = window.prompt("Rename recording:", record.name);
   if (newName === null) return;
   if (!newName.trim()) {
     announceAlert("Recording name cannot be empty.");
@@ -449,19 +450,23 @@ async function handleRenameRecording(id, currentName) {
   }
   await storage.updateRecordingMetadata(id, { name: newName });
   await refreshLibrary();
-  announceStatus("Recording renamed.");
 }
 
-async function handleEditNotes(id, currentNotes) {
-  const newNotes = window.prompt("Edit notes for this recording:", currentNotes || "");
+async function handleEditNotes(id) {
+  const record = state.library.find((r) => r.id === id);
+  if (!record) return;
+
+  const newNotes = window.prompt("Edit notes for this recording:", record.notes || "");
   if (newNotes === null) return;
   await storage.updateRecordingMetadata(id, { notes: newNotes });
   await refreshLibrary();
-  announceStatus("Notes updated.");
 }
 
-async function handleDeleteRecording(id, name) {
-  const confirmed = window.confirm(`Delete "${name}"? This cannot be undone.`);
+async function handleDeleteRecording(id) {
+  const record = state.library.find((r) => r.id === id);
+  if (!record) return;
+
+  const confirmed = window.confirm(`Delete "${record.name}"? This cannot be undone.`);
   if (!confirmed) return;
 
   await storage.deleteRecording(id);
@@ -527,23 +532,15 @@ function bindStaticEventListeners() {
   el.restartButton.addEventListener("click", () => {
     playback.restart();
     el.playPauseButton.textContent = "Pause (Ctrl+Alt+P)";
-    announceStatus("Playback restarted.");
   });
   el.skipBackwardButton.addEventListener("click", () => playback.skipBackward());
   el.skipForwardButton.addEventListener("click", () => playback.skipForward());
-  el.jumpBeginningButton.addEventListener("click", () => {
-    playback.jumpToBeginning();
-    announceStatus("Jumped to beginning.");
-  });
-  el.jumpEndButton.addEventListener("click", () => {
-    playback.jumpToEnd();
-    announceStatus("Jumped to end.");
-  });
+  el.jumpBeginningButton.addEventListener("click", () => playback.jumpToBeginning());
+  el.jumpEndButton.addEventListener("click", () => playback.jumpToEnd());
   el.announcePositionButton.addEventListener("click", announcePlaybackPosition);
 
   el.audioPlayer.addEventListener("ended", () => {
     el.playPauseButton.textContent = "Play (Ctrl+Alt+P)";
-    announceStatus("Playback finished.");
   });
 }
 
