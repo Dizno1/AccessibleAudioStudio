@@ -74,9 +74,11 @@ Shortcuts are suspended while focus is in a text field (typing an input or texta
 
 If a shortcut doesn't seem to work, the "Keyboard Shortcut Diagnostics" panel at the bottom of the page reports the last shortcut the app detected and what happened as a result -- useful for telling apart a keystroke that never reached the app from one that reached it but had nothing to do yet.
 
-## A quiet application
+## A quiet, stable application
 
-AccessibleAudioStudio speaks only when there's something the user needs to know right now -- state changes like "Recording started," "Playback paused," or an error -- never continuously and never to narrate things a screen reader will already announce on its own (like a button's own pressed state) or that are better left as text the user can read on demand. See `docs/Screen Reader First Principles.md`, "Silence Is an Accessibility Feature," for the full policy.
+AccessibleAudioStudio speaks only when there's something the user needs to know right now -- state changes like "Recording started," "Playback paused," or an error -- never continuously and never to narrate things a screen reader will already announce on its own (like a button's own pressed state) or that are better left as text the user can read on demand.
+
+It also keeps its hands off keyboard focus and the DOM once something's underway: the Start/Stop control is one button that relabels itself rather than two buttons swapped via disable/enable, the microphone and profile selectors stay enabled through a recording instead of being disabled and yanking focus away, and the Recording Library updates existing elements in place instead of rebuilding itself. Disabling or recreating whatever control currently has focus is what was actually causing most of the extra chatter reported during testing -- not the application's own announcements, but the browser and screen reader reacting to focus getting kicked around. See `docs/Screen Reader First Principles.md`, "Silence Is an Accessibility Feature," for the full policy.
 
 ## Recommended next phase
 

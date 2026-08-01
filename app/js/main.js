@@ -38,9 +38,8 @@ const el = {
   profileDescription: document.getElementById("profile-description"),
 
   recordingStatus: document.getElementById("recording-status"),
-  startButton: document.getElementById("start-recording-button"),
+  recordToggleButton: document.getElementById("record-toggle-button"),
   pauseResumeButton: document.getElementById("pause-resume-button"),
-  stopButton: document.getElementById("stop-recording-button"),
 
   savePanel: document.getElementById("review-panel"),
   reviewDurationDescription: document.getElementById("review-duration-description"),
@@ -156,7 +155,7 @@ async function handleEnableMicrophone() {
 
     el.micSelection.hidden = false;
     el.micStatus.textContent = `Microphone access granted. ${state.microphones.length} microphone${state.microphones.length === 1 ? "" : "s"} found. Ready to record.`;
-    el.startButton.disabled = false;
+    el.recordToggleButton.disabled = false;
   } catch (err) {
     el.micStatus.textContent = "Microphone access was not granted.";
     announceAlert("Microphone access was denied or unavailable. " + describeError(err));
@@ -184,7 +183,7 @@ async function startRecording() {
     announceAlert("Recording is not available in this browser.");
     return;
   }
-  if (el.startButton.disabled) {
+  if (el.recordToggleButton.disabled) {
     announceAlert("Enable microphone access before recording.");
     return;
   }
@@ -205,12 +204,16 @@ async function startRecording() {
     el.recordingStatus.textContent = `Recording with the ${profile.name} profile.`;
     announceStatus("Recording started.");
 
-    el.startButton.disabled = true;
+    // The button that had focus (very likely this one) keeps it: relabel
+    // in place rather than disabling it, so the browser never has a
+    // reason to move focus or re-announce surrounding context. The
+    // microphone and profile selectors are deliberately left enabled too
+    // — changing them mid-recording has no effect on the stream already
+    // in use, so there's nothing to protect by disabling them, and doing
+    // so risks kicking focus away from whichever one the user just used.
+    el.recordToggleButton.textContent = "Stop Recording (Ctrl+Alt+R)";
     el.pauseResumeButton.disabled = false;
     el.pauseResumeButton.textContent = "Pause Recording (Ctrl+Alt+Space)";
-    el.stopButton.disabled = false;
-    el.micSelect.disabled = true;
-    el.profileSelect.disabled = true;
   } catch (err) {
     announceAlert("Could not start recording. " + describeError(err));
   }
@@ -249,11 +252,7 @@ async function stopRecording() {
     state.micStream = null;
     state.pendingRecording = { blob, durationSeconds };
 
-    el.startButton.disabled = false;
     el.pauseResumeButton.disabled = true;
-    el.stopButton.disabled = true;
-    el.micSelect.disabled = false;
-    el.profileSelect.disabled = false;
 
     openReviewPanel(durationSeconds);
   } catch (err) {
@@ -270,7 +269,8 @@ function openReviewPanel(durationSeconds) {
   el.recordingStatus.textContent = "Recording stopped. Ready for review.";
   el.reviewDurationDescription.textContent = `Length: ${formatDurationNatural(durationSeconds)}.`;
   el.savePanel.hidden = false;
-  el.startButton.disabled = true;
+  el.recordToggleButton.textContent = "Start Recording (Ctrl+Alt+R)";
+  el.recordToggleButton.disabled = true;
 
   // Reviewing an unsaved recording takes over the shared playback controls.
   // Selecting a different saved recording is disabled until this one is
@@ -282,6 +282,9 @@ function openReviewPanel(durationSeconds) {
   refreshLibrary();
 
   announceStatus("Recording stopped.");
+  // This is the one deliberate focus move in this flow — an explicit,
+  // previously agreed consequence of stopping, not an incidental side
+  // effect of disabling a control.
   el.playPauseButton.focus();
 }
 
@@ -357,7 +360,7 @@ async function confirmSave() {
 
     closeReviewPanel();
     el.recordingStatus.textContent = "Not recording.";
-    el.startButton.disabled = false;
+    el.recordToggleButton.disabled = false;
     updatePlaybackStatusText();
     await refreshLibrary();
 
@@ -376,13 +379,13 @@ function recordAgain() {
   if (!confirmed) return;
 
   discardPendingRecording();
-  el.startButton.focus();
+  el.recordToggleButton.focus();
 }
 
 function discardRecording() {
   discardPendingRecording();
   announceStatus("Recording discarded.");
-  el.startButton.focus();
+  el.recordToggleButton.focus();
 }
 
 /** Shared cleanup for Record Again and Discard: drop the unsaved recording and return to ready-to-record. */
@@ -393,7 +396,7 @@ function discardPendingRecording() {
   setPlaybackControlsEnabled(false);
   updatePlaybackStatusText();
   el.recordingStatus.textContent = "Not recording.";
-  el.startButton.disabled = false;
+  el.recordToggleButton.disabled = false;
   refreshLibrary();
 }
 
@@ -518,9 +521,8 @@ function bindStaticEventListeners() {
     updateProfileDescription();
   });
 
-  el.startButton.addEventListener("click", startRecording);
+  el.recordToggleButton.addEventListener("click", () => toggleRecording());
   el.pauseResumeButton.addEventListener("click", togglePauseResume);
-  el.stopButton.addEventListener("click", stopRecording);
 
   el.saveButton.addEventListener("click", openSaveForm);
   el.recordAgainButton.addEventListener("click", recordAgain);
@@ -548,32 +550,7 @@ function registerShortcutActions() {
   // Ctrl+Alt+R toggles like the record button on a physical recorder:
   // not recording -> start; recording or paused -> stop. There is no
   // separate stop shortcut.
-  registerAction("toggleRecording", () => {
-    const isActiveRecording =
-      state.engine &&
-      (state.engine.state === RecordingState.RECORDING || state.engine.state === RecordingState.PAUSED);
-
-    if (isActiveRecording) {
-      if (el.stopButton.disabled) {
-        return { executed: false, reason: "The Stop Recording control is not currently available." };
-      }
-      stopRecording();
-      return { executed: true, resultText: "Stop Recording" };
-    }
-
-    if (state.pendingRecording) {
-      return {
-        executed: false,
-        reason: "Finish reviewing the current recording first — Save, Record Again, or Discard.",
-      };
-    }
-
-    if (el.startButton.disabled) {
-      return { executed: false, reason: "Enable microphone access before recording." };
-    }
-    startRecording();
-    return { executed: true, resultText: "Start Recording" };
-  });
+  registerAction("toggleRecording", toggleRecording);
 
   registerAction("togglePauseResume", () => {
     if (el.pauseResumeButton.disabled) {
@@ -590,6 +567,31 @@ function registerShortcutActions() {
     togglePlayPause();
     return { executed: true, resultText: "Play or Pause Playback" };
   });
+}
+
+/** Shared by the record toggle button's click handler and the Ctrl+Alt+R shortcut. */
+function toggleRecording() {
+  const isActiveRecording =
+    state.engine &&
+    (state.engine.state === RecordingState.RECORDING || state.engine.state === RecordingState.PAUSED);
+
+  if (isActiveRecording) {
+    stopRecording();
+    return { executed: true, resultText: "Stop Recording" };
+  }
+
+  if (state.pendingRecording) {
+    return {
+      executed: false,
+      reason: "Finish reviewing the current recording first — Save, Record Again, or Discard.",
+    };
+  }
+
+  if (el.recordToggleButton.disabled) {
+    return { executed: false, reason: "Enable microphone access before recording." };
+  }
+  startRecording();
+  return { executed: true, resultText: "Start Recording" };
 }
 
 function initShortcutDiagnosticsPanel() {

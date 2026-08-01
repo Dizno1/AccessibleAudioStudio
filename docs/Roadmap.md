@@ -1,14 +1,14 @@
 # Roadmap
 
-## Status: Phase 1 complete, plus one accessibility refinement pass
+## Status: Phase 1 complete, plus two accessibility refinement passes
 
-Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible recording foundation. Nothing beyond recording, playback, and library management is in scope yet — by design. A follow-up refinement pass (below) corrected a real keyboard-shortcut bug and substantially reduced how much the application speaks automatically.
+Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible recording foundation. Nothing beyond recording, playback, and library management is in scope yet — by design. Two follow-up refinement passes (below) corrected a real keyboard-shortcut bug, substantially reduced how much the application speaks automatically, and eliminated focus/DOM instability that was causing extra screen-reader chatter beyond the application's own announcements.
 
 ### Completed in Phase 1
 
 **Application shell**
 - Semantic landmark structure (`header`, `main`, sectioned `panel`s, `footer`), logical heading hierarchy, skip link, responsive single-column layout.
-- Two ARIA live regions (`polite` for status, `assertive` for errors) drive all dynamic announcements. As of the accessibility refinement pass, automatic live announcements are limited to a fixed whitelist — see `docs/Screen Reader First Principles.md`, "Silence Is an Accessibility Feature."
+- Two ARIA live regions (`polite` for status, `assertive` for errors) drive all dynamic announcements. Automatic live announcements are limited to a fixed whitelist — see `docs/Screen Reader First Principles.md`, "Silence Is an Accessibility Feature."
 
 **Audio Device Manager** (`app/js/deviceManager.js`)
 - Browser capability detection (`getUserMedia`, `MediaRecorder`, supported MIME type, `IndexedDB`) reported to the user rather than assumed.
@@ -18,12 +18,19 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 **Recording Engine** (`app/js/recordingEngine.js`)
 - Explicit state machine (idle → recording → paused → stopped) built on `MediaRecorder`, guarding against invalid transitions.
 - Start, Pause, Resume, and Stop are implemented. Stopping does not save automatically — see "Review before saving" below.
+- Start and Stop are now one persistent button (`record-toggle-button`) that relabels itself in place ("Start Recording" ↔ "Stop Recording") rather than swapping between two separate buttons via disable/enable. The microphone and profile selectors are also left enabled throughout recording. Both changes exist for the same reason: disabling whatever control currently has focus forces the browser to move focus away and often causes assistive tech to re-announce surrounding landmark/region context — noise the user never asked for. See "Focus & DOM stability" below.
 
 **Review before saving** (`app/js/main.js`)
 - When a recording stops, it is never saved sight-unseen: the user can listen to it immediately, using the ordinary Playback controls, before naming it or deciding whether to keep it.
 - Stopping announces once, "Recording stopped." (the fuller "Ready for review" context is visible text, readable on demand), moves focus to the Play button, and does not auto-play.
 - Three decisions are offered: **Save Recording** (only now does the app ask for a name — with a useful default — and notes), **Record Again** (confirms with "Record again and discard the current recording?" before discarding), and **Discard Recording**.
-- While a recording is under review, Start Recording is disabled and the Recording Library's "Select for Playback" controls are disabled, so what's loaded for playback can never silently drift from what the user is actually reviewing.
+- While a recording is under review, the record toggle button is disabled and the Recording Library's "Select for Playback" controls are disabled, so what's loaded for playback can never silently drift from what the user is actually reviewing. This disabling happens alongside the one deliberate focus move in this flow (to the Play button) — never on its own as an incidental side effect.
+
+**Focus & DOM stability** (`app/js/main.js`, `app/js/library.js`)
+- Once recording or playback begins, whatever control had focus keeps it until the user moves it themselves, or takes an action that deliberately hands focus somewhere else (like Stop moving focus to Play — an established, intentional exception). Nothing is disabled, destroyed, or rebuilt as an incidental side effect of a state change.
+- Concretely: the record toggle button is never disabled while a recording is starting or stopping (only relabeled), and the microphone/profile selectors are never disabled during recording — disabling either risks yanking focus off whichever one the user was just on, which reliably produces the "browser re-announces the region/landmark" noise that has nothing to do with the application's own announcements.
+- The Recording Library (see below) updates existing DOM elements in place rather than tearing sections down and rebuilding them, for the same reason.
+- No routine recording or playback event uses a browser-level dialog or notification. The only native dialogs in the app (`window.confirm`/`window.prompt` for Rename, Edit Notes, Delete, and Record Again) are deliberate, infrequent library-management actions — never triggered automatically and never used for the moment-to-moment recording/playback flow. The one unavoidable browser-native prompt is the microphone permission request, which is a one-time part of initial setup, not a routine event.
 
 **Playback** (`app/js/playback.js`)
 - Play/Pause, Restart, Skip Forward, Skip Backward, Jump to Beginning, Jump to End — all keyboard operable through standard buttons.
@@ -57,7 +64,7 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 - No editing, trimming, or markers — intentionally deferred.
 - No transcription, AI features, cloud sync, or VoiceOfOpenDoor integration — intentionally deferred.
 - Rename and notes editing currently use the browser's native prompt dialog for simplicity; a fully in-page accessible form may replace this in a later phase if user feedback calls for it.
-- Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. The priority logic and "no recording available" messaging are clarified, and the Ctrl+Alt+R suppression bug (see above) is fixed, which may well have been the same root cause for both — but this hasn't been explicitly retested yet. Worth confirming with the Keyboard Shortcut Diagnostics panel before assuming it's resolved.
+- Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. Two related root causes have since been fixed (the `<select>` suppression bug, and disabling controls that could hold focus), which plausibly explains the original report — but it hasn't been explicitly retested since these fixes landed. Worth confirming with the Keyboard Shortcut Diagnostics panel.
 
 ## Planned future phases (not yet scheduled)
 
