@@ -64,12 +64,13 @@ tests/                     Reserved for future automated tests
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+Alt+R | Start Recording |
-| Ctrl+Alt+S | Stop Recording |
+| Ctrl+Alt+R | Start or Stop Recording (toggle, like the record button on a physical recorder) |
 | Ctrl+Alt+Space | Pause or Resume Recording |
 | Ctrl+Alt+P | Play or Pause the selected recording |
 
 Shortcuts are suspended while typing in a text field. Every visible button remains fully functional at all times -- shortcuts are a supplement, never a replacement.
+
+If a shortcut doesn't seem to work, the "Keyboard Shortcut Diagnostics" panel at the bottom of the page reports the last shortcut the app detected and what happened as a result -- useful for telling apart a keystroke that never reached the app from one that reached it but had nothing to do yet.
 
 ## Recommended next phase
 

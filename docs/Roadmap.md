@@ -33,9 +33,13 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 
 **Keyboard shortcuts** (`app/js/shortcutService.js`)
 - Centralized shortcut service with a single configuration array, rather than per-component key handlers.
-- Ctrl+Alt+R (Start), Ctrl+Alt+S (Stop), Ctrl+Alt+Space (Pause/Resume), Ctrl+Alt+P (Play/Pause).
+- Ctrl+Alt+R toggles recording (Start when idle, Stop when recording or paused) — deliberately mirroring the single record button on a physical recorder rather than separate start/stop keys. Ctrl+Alt+Space (Pause/Resume), Ctrl+Alt+P (Play/Pause).
 - Shortcuts are suspended automatically while focus is in an editable field; visible buttons remain fully functional at all times and display their shortcut in their label.
 - Reserved (not yet wired to keys) future actions are declared in the same module: previous/next/insert marker, restart playback, skip forward/backward, jump to beginning/end, trim start/end, normalize audio, export recording. Adding real shortcuts for these later is a configuration change, not a redesign.
+
+**Keyboard Shortcut Diagnostics** (`app/js/shortcutDiagnostics.js`)
+- A small always-on diagnostic panel (under a "Keyboard Shortcut Diagnostics (Help)" disclosure in the footer) reports the last shortcut the app detected, whether an action executed, and why not if it didn't.
+- Every recognized key combination is reported to this module by the shortcut service — including the case where it was suppressed because focus was in a text field — so a shortcut that "does nothing" can be told apart from one that never reached the app at all.
 
 ### Known limitations at the end of Phase 1
 
@@ -43,6 +47,7 @@ Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible reco
 - No editing, trimming, or markers — intentionally deferred.
 - No transcription, AI features, cloud sync, or VoiceOfOpenDoor integration — intentionally deferred.
 - Rename and notes editing currently use the browser's native prompt dialog for simplicity; a fully in-page accessible form may replace this in a later phase if user feedback calls for it.
+- Ctrl+Alt+P (Play/Pause) was reported as not firing during initial testing. Left unchanged for now, pending a retest using the new Keyboard Shortcut Diagnostics panel to determine whether the keystroke isn't reaching the app, is being suppressed, or the handler is correctly declining because no recording is selected.
 
 ## Planned future phases (not yet scheduled)
 

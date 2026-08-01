@@ -5,27 +5,32 @@
 //  - All shortcuts are declared in ONE config array below. Nothing outside
 //    this file attaches its own keydown listeners for global shortcuts.
 //  - Handlers are registered by action name via registerAction(), keeping
-//    this file decoupled from the rest of the app.
+//    this file decoupled from the rest of the app. A handler returns
+//    { executed: boolean, reason?: string, resultText?: string } so this
+//    service can report what actually happened to the diagnostics module.
 //  - Shortcuts never fire while focus is inside an editable field, so
-//    normal typing is never interrupted.
+//    normal typing is never interrupted. That case is still reported to
+//    diagnostics (without running the handler or calling
+//    preventDefault()), so a "shortcut did nothing" report can be told
+//    apart from "shortcut never reached the app".
 //  - Visible controls always remain the primary, fully-functional way to
 //    do everything a shortcut does. Shortcuts are a supplement.
 //  - This structure is built to support future user-customizable shortcuts:
 //    SHORTCUTS below is the single place a remapping UI would need to read
 //    and write.
+//
+// Ctrl+Alt+R is a toggle, deliberately mirroring the single Record button
+// on a physical recorder: not recording -> starts recording; recording
+// (or paused) -> stops recording. There is no separate "stop" shortcut.
+
+import { recordShortcutEvent } from "./shortcutDiagnostics.js";
 
 export const SHORTCUTS = [
   {
-    action: "startRecording",
+    action: "toggleRecording",
     combo: { ctrl: true, alt: true, key: "r" },
     label: "Ctrl+Alt+R",
-    description: "Start Recording",
-  },
-  {
-    action: "stopRecording",
-    combo: { ctrl: true, alt: true, key: "s" },
-    label: "Ctrl+Alt+S",
-    description: "Stop Recording",
+    description: "Start or Stop Recording",
   },
   {
     action: "togglePauseResume",
@@ -87,16 +92,42 @@ function matchesCombo(event, combo) {
 }
 
 function handleKeydown(event) {
-  if (isEditableTarget(event.target)) return;
-
   const shortcut = SHORTCUTS.find((s) => matchesCombo(event, s.combo));
-  if (!shortcut) return;
+  if (!shortcut) return; // not one of our combos; nothing useful to log
+
+  if (isEditableTarget(event.target)) {
+    // Recognized combo, but suppressed so normal typing is never
+    // interrupted. Still reported so this is distinguishable from a
+    // keystroke that never reached the app at all.
+    recordShortcutEvent({
+      label: shortcut.label,
+      description: shortcut.description,
+      executed: false,
+      reason: "Focus was in a text field, so the shortcut was ignored and typing was not interrupted.",
+    });
+    return;
+  }
 
   const handler = actionHandlers.get(shortcut.action);
-  if (!handler) return;
+  if (!handler) {
+    recordShortcutEvent({
+      label: shortcut.label,
+      description: shortcut.description,
+      executed: false,
+      reason: "No handler is registered for this action.",
+    });
+    return;
+  }
 
   event.preventDefault();
-  handler();
+  const result = handler() || {};
+  recordShortcutEvent({
+    label: shortcut.label,
+    description: shortcut.description,
+    executed: !!result.executed,
+    reason: result.reason,
+    resultText: result.resultText,
+  });
 }
 
 /** Attach the single global keydown listener. Safe to call once at startup. */

@@ -57,7 +57,7 @@
           Pause Recording (Ctrl+Alt+Space)
         </button>
         <button type="button" id="stop-recording-button" disabled>
-          Stop Recording (Ctrl+Alt+S)
+          Stop Recording (Ctrl+Alt+R)
         </button>
       </div>
 
@@ -111,12 +111,22 @@
     <details>
       <summary>Keyboard Shortcuts</summary>
       <ul>
-        <li>Ctrl+Alt+R — Start Recording</li>
-        <li>Ctrl+Alt+S — Stop Recording</li>
+        <li>Ctrl+Alt+R — Start or Stop Recording (toggle, like the record button on a physical recorder)</li>
         <li>Ctrl+Alt+Space — Pause or Resume Recording</li>
         <li>Ctrl+Alt+P — Play or Pause the selected recording</li>
       </ul>
       <p>Shortcuts do not work while typing in a text field, and every visible button always works as an alternative.</p>
+    </details>
+
+    <details>
+      <summary>Keyboard Shortcut Diagnostics (Help)</summary>
+      <p>
+        If a keyboard shortcut doesn't seem to work, check here after pressing it. This reports
+        whether the keystroke reached the application and what happened as a result — useful for
+        telling apart a shortcut that was intercepted before it got here from one that reached the
+        app but had nothing to do yet.
+      </p>
+      <p id="diagnostics-last-shortcut">No shortcut received yet.</p>
     </details>
   </footer>
 

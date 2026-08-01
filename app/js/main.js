@@ -20,6 +20,7 @@ import * as storage from "./storage.js";
 import { renderLibrary } from "./library.js";
 import { formatDurationNatural } from "./timeFormat.js";
 import { initShortcutService, registerAction } from "./shortcutService.js";
+import { onShortcutEvent, getLastShortcutEvent } from "./shortcutDiagnostics.js";
 
 // ---------------------------------------------------------------------
 // Element references
@@ -59,6 +60,8 @@ const el = {
   announcePositionButton: document.getElementById("announce-position-button"),
 
   libraryContainer: document.getElementById("library-container"),
+
+  diagnosticsLastShortcut: document.getElementById("diagnostics-last-shortcut"),
 };
 
 // ---------------------------------------------------------------------
@@ -88,6 +91,7 @@ async function init() {
   registerShortcutActions();
   bindStaticEventListeners();
   populateProfileSelect();
+  initShortcutDiagnosticsPanel();
 
   state.capabilities = getBrowserCapabilities();
   if (!state.capabilities.isFullySupported) {
@@ -462,18 +466,68 @@ function bindStaticEventListeners() {
 }
 
 function registerShortcutActions() {
-  registerAction("startRecording", () => {
-    if (!el.startButton.disabled) startRecording();
+  // Ctrl+Alt+R toggles like the record button on a physical recorder:
+  // not recording -> start; recording or paused -> stop. There is no
+  // separate stop shortcut.
+  registerAction("toggleRecording", () => {
+    const isActiveRecording =
+      state.engine &&
+      (state.engine.state === RecordingState.RECORDING || state.engine.state === RecordingState.PAUSED);
+
+    if (isActiveRecording) {
+      if (el.stopButton.disabled) {
+        return { executed: false, reason: "The Stop Recording control is not currently available." };
+      }
+      stopRecording();
+      return { executed: true, resultText: "Stop Recording" };
+    }
+
+    if (el.startButton.disabled) {
+      return { executed: false, reason: "Enable microphone access before recording." };
+    }
+    startRecording();
+    return { executed: true, resultText: "Start Recording" };
   });
-  registerAction("stopRecording", () => {
-    if (!el.stopButton.disabled) stopRecording();
-  });
+
   registerAction("togglePauseResume", () => {
-    if (!el.pauseResumeButton.disabled) togglePauseResume();
+    if (el.pauseResumeButton.disabled) {
+      return { executed: false, reason: "There is no active recording to pause or resume." };
+    }
+    togglePauseResume();
+    return { executed: true, resultText: "Pause or Resume Recording" };
   });
+
   registerAction("togglePlayPause", () => {
-    if (!el.playPauseButton.disabled) togglePlayPause();
+    if (el.playPauseButton.disabled) {
+      return { executed: false, reason: "No recording is selected for playback." };
+    }
+    togglePlayPause();
+    return { executed: true, resultText: "Play or Pause Playback" };
   });
+}
+
+function initShortcutDiagnosticsPanel() {
+  if (!el.diagnosticsLastShortcut) return;
+
+  const render = (event) => {
+    if (!event) {
+      el.diagnosticsLastShortcut.textContent = "No shortcut received yet.";
+      return;
+    }
+    const time = event.timestamp.toLocaleTimeString();
+    if (event.executed) {
+      el.diagnosticsLastShortcut.textContent =
+        `Last shortcut detected: ${event.label} (${event.description}) at ${time}. ` +
+        `Action executed: ${event.resultText}.`;
+    } else {
+      el.diagnosticsLastShortcut.textContent =
+        `Last shortcut detected: ${event.label} (${event.description}) at ${time}. ` +
+        `Action ignored: ${event.reason}`;
+    }
+  };
+
+  render(getLastShortcutEvent());
+  onShortcutEvent(render);
 }
 
 function describeError(err) {
