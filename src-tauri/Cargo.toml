@@ -1,6 +1,6 @@
 [package]
 name = "accessibleaudiostudio-pro"
-version = "0.1.4"
+version = "0.1.5"
 description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
@@ -19,20 +19,20 @@ rust-version = "1.77.2"
 # Windows treating a Pro test build as an upgrade of, or collision with, the
 # published free edition.
 #
-# tauri-plugin-dialog (0.1.4): "Open Audio" now goes through a custom
-# command, pick_and_read_audio_files (see src/main.rs), which calls this
-# plugin's Rust API (DialogExt) directly and reads every selected file's
-# bytes with std::fs — entirely on the Rust side, in one round trip. This
-# replaced calling window.__TAURI__.dialog.open({ multiple: true }) from
-# JavaScript (0.1.2/0.1.3): real Windows testing, using the Open Audio
-# Diagnostics panel that predecessor introduced, proved that approach was
-# only ever returning one path to JavaScript regardless of how many files
-# were selected — evidence pointing at the dialog call/JS-global-binding
-# layer, not at this app's own file-processing code (separately confirmed
-# correct by unit tests). Moving the picking AND the reading into one Rust
-# command removes that entire suspect layer. tauri-plugin-fs is no longer
-# a dependency as of 0.1.4 — file bytes are read with plain std::fs now,
-# so nothing in this app calls the fs plugin's own commands anymore.
+# wfd (0.1.5): "Open Audio" now shows Windows' own native multi-select
+# file picker (IFileOpenDialog with FOS_ALLOWMULTISELECT, via this crate's
+# open_dialog() — see src/main.rs) instead of going through
+# tauri-plugin-dialog's cross-platform abstraction at all. Real Windows
+# testing of 0.1.2 through 0.1.4 — all of which used tauri-plugin-dialog,
+# first from JavaScript and then from Rust directly — consistently
+# reported only one file returned regardless of how many were selected,
+# with the Open Audio Diagnostics panel proving every stage downstream of
+# the dialog call itself was processing that one file correctly. That
+# evidence points specifically at tauri-plugin-dialog's Windows dialog
+# backend, not at anything in this app — so 0.1.5 replaces it for this one
+# function with a small, Windows-only crate that calls the same
+# IFileOpenDialog COM API Explorer and Audacity themselves use, directly.
+# tauri-plugin-dialog is no longer a dependency.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -40,9 +40,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-window-state = "2"
-tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Windows-only: the native multi-select "Open Audio" picker (see
+# pick_files_native in src/main.rs). Not needed on other platforms, and
+# this crate is Windows-specific internally, so it's scoped to the
+# windows target rather than pulled in unconditionally.
+[target.'cfg(windows)'.dependencies]
+wfd = "0.1"
 
 [[bin]]
 name = "accessibleaudiostudio-pro"

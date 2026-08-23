@@ -475,21 +475,122 @@ backend behavior, or in something about this specific Windows
 environment — which would be the next place to look, not this app's code
 again. That is a real, distinct next branch, not a hedge.
 
+## 0.1.5 — replaced tauri-plugin-dialog entirely with a direct native Windows call
+
+0.1.4's diagnostics were, again, definitive:
+
+> Multi-select requested: yes.
+> Native dialog returned: 1 file.
+> Passed across the Rust/Tauri boundary: 1 file.
+> Files read successfully: 1 of 1.
+> Received in JavaScript: 1 file.
+> Supported audio files: 1.
+> Files decoded: 1.
+> Documents opened: 1.
+
+0.1.4 had already moved the dialog call from JavaScript into Rust,
+bypassing the JS-global-binding layer 0.1.3's diagnostics had implicated —
+and the result was unchanged. That ruled out the JS binding layer
+specifically and left `tauri-plugin-dialog`'s own Windows dialog backend
+as the remaining suspect, since every stage this app's own code controls
+had already been shown clean, twice, in two different architectures.
+
+Per the correction directive for this build: no more changes to the
+editor, decoding, document creation, or JS file processing — none of
+those were touched. The only change is replacing the one component still
+under suspicion.
+
+### What changed
+
+`tauri-plugin-dialog` is no longer a dependency at all. In its place,
+`pick_and_read_audio_files` (`src-tauri/src/main.rs`) calls Windows' own
+`IFileOpenDialog` COM interface with `FOS_ALLOWMULTISELECT` set — the
+same API Explorer's Open dialog and Audacity's Windows build are built
+on — through `wfd`, a small, Windows-only crate built specifically
+around that one API rather than a large cross-platform abstraction layered
+on top of it. `wfd` is scoped to `[target.'cfg(windows)'.dependencies]`
+in `Cargo.toml`, since this app currently only ships as Windows
+installers and the browser build already has its own separate fallback
+(the HTML `<input type="file" multiple>`, used automatically whenever no
+Tauri runtime is present).
+
+### How the implementation was chosen, and its real verification status
+
+Before writing any of this, real effort went into actually verifying it
+rather than writing it blind and hoping, because "I found it" has now
+been said three times about this exact bug:
+
+- **A real Rust toolchain was installed in this environment** (`apt-get
+  install cargo rustc`), specifically to attempt genuine `cargo check`
+  verification — something not previously available for this project's
+  Rust-side changes.
+- **Hand-writing the raw `windows` crate COM bindings directly was tried
+  first** (`CoCreateInstance`, `IFileOpenDialog`, `IShellItemArray`,
+  etc.) and abandoned after confirming, via two separate real compiler
+  attempts, that neither the `windows` crate nor `winapi` can be
+  meaningfully type-checked on this Linux sandbox: both gate their real
+  implementations behind `cfg(windows)` / `std::os::windows`, neither of
+  which exist here, and there is no network path in this environment to
+  install a Windows Rust target (`rustup`/`static.rust-lang.org` are not
+  reachable). This is a genuine, confirmed environmental wall, not a
+  guess about one.
+- **Given that wall applies equally to any approach touching real Windows
+  APIs**, the deciding factor became risk of *authorship* error rather
+  than risk of *compilation* error: hand-rolled COM interop has a large,
+  easy-to-get-wrong surface (exact module paths, exact method signatures,
+  manual memory management for returned strings). `wfd` was chosen
+  instead specifically because its entire public API is three items
+  (`DialogParams`, `open_dialog()`, `OpenDialogResult`), and its exact
+  struct fields were confirmed by directly reading its published source
+  on docs.rs — `OpenDialogResult { selected_file_path, selected_file_paths:
+  Vec<PathBuf>, selected_file_type_index }` — not inferred from
+  documentation prose or guessed from convention.
+- **This is source-verified, not compiler-verified.** Say that plainly:
+  this build's central change has not been proven to compile, and cannot
+  be proven to compile in this environment. What's different from
+  previous rounds is that the API surface being called is now confirmed
+  correct by reading the actual crate source rather than assumed from
+  general Windows/Rust familiarity, and the crate itself is small enough
+  that there's very little room left for a mismatch.
+
+### Diagnostics extended per the correction directive
+
+The Open Audio Diagnostics panel now reports, in order: "Windows native
+multi-select requested," "Windows picker returned," "Passed across
+Rust/Tauri boundary," "Files read successfully," "Received in
+JavaScript," then the existing supported/decoded/opened stages — every
+line the directive asked for. If the command invocation itself fails
+(rather than returning a low count), the panel now says so explicitly
+("The picker could not be opened: ...") instead of silently keeping
+whatever it last displayed, and the user gets a concise alert — "Multiple-
+file selection could not be opened." — rather than the app quietly doing
+nothing. There is no old broken path left to silently fall back to:
+`tauri-plugin-dialog` was removed, not kept as a fallback.
+
+### Preserved
+
+Duplicate-file handling, the document-switching combo box, Pro branding
+(H1, window/document title), the three skip links, simplified landmark
+structure, the Open Door Design footer, approved design tokens, and the
+free recording workflow are all unchanged in this build — none of the
+files that implement them were touched.
+
 ## Recommended next phase
 
-Build 0.1.4 via GitHub Actions and, on real Windows, select several files
+Build 0.1.5 via GitHub Actions and, on real Windows, select several files
 in one Open Audio operation, then open the Open Audio Diagnostics panel in
-the footer immediately after. "Native dialog returned" is now the
-critical number: it comes from a Rust command that bypasses the
-JS-dialog-binding layer 0.1.3's diagnostics implicated, so this is a
-genuinely different test than the last three builds, not a repeat. If it
-still reports 1 regardless of selection size, the next place to look is
-below `tauri-plugin-dialog` itself — the `rfd` crate or a Windows-specific
-dialog backend behavior — not this app's code again. If it reports the
-real count, confirm every later stage matches through to "Documents
-opened," and confirm the document/window title still says
-"AccessibleAudioStudio Pro" from first launch. After the real multi-file
-count is confirmed working: a fair trial of the current document-switching
-combo box, then markers (Phase 6), since several editing operations here
-(set selection start/end, navigate by increment) already share the
-underlying mechanics markers will need.
+the footer immediately after. "Windows picker returned" is the number that
+matters: it now comes from a call that has never touched
+`tauri-plugin-dialog` at all, so this is a genuinely different test than
+any of the last four builds. If it still reports 1 regardless of selection
+size, the next investigation is below the application layer entirely —
+Windows shell extensions, a security product intercepting the dialog, or
+something specific to this machine's environment — since two independent
+Windows dialog implementations (`tauri-plugin-dialog` and now `wfd`) would
+have failed identically. If it reports the real count, confirm every later
+stage matches through to "Documents opened," and confirm the document/
+window title, H1, skip links, footer, and landmark structure are all still
+correct. After the real multi-file count is confirmed working: a fair
+trial of the current document-switching combo box, then markers (Phase 6),
+since several editing operations here (set selection start/end, navigate
+by increment) already share the underlying mechanics markers will need.

@@ -248,7 +248,7 @@ async function openAudioViaTauriCommand() {
   try {
     const { invoke } = window.__TAURI__.core;
     const result = await invoke("pick_and_read_audio_files");
-    // result: { native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
+    // result: { windows_native_multi_select, native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
 
     if (result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0) {
       return; // user cancelled the dialog
@@ -261,13 +261,34 @@ async function openAudioViaTauriCommand() {
     });
 
     await processOpenedFiles(files, {
-      pathway: "tauri-dialog",
+      pathway: "windows-native",
+      windowsNativeMultiSelect: result.windows_native_multi_select,
       nativeDialogCount: result.native_dialog_count,
       boundaryCount: result.files.length + result.read_errors.length,
       readFailedCount: result.read_errors.length,
     });
   } catch (err) {
-    announceAlert("Could not open the file dialog. " + (err && err.message ? err.message : String(err)));
+    // Never silently pretend this worked — a failed invoke means no
+    // picker was ever shown, so the diagnostics panel needs to say that
+    // plainly rather than staying on whatever it last reported.
+    updateOpenAudioDiagnostics({
+      pathway: "windows-native",
+      windowsNativeMultiSelect: true,
+      nativeDialogCount: 0,
+      boundaryCount: 0,
+      jsReceivedCount: 0,
+      readFailedCount: 0,
+      supportedCount: 0,
+      decodedCount: 0,
+      failedDecodeCount: 0,
+      skippedUnsupportedCount: 0,
+      alreadyOpenCount: 0,
+      reopenedCount: 0,
+      declinedCount: 0,
+      openedCount: 0,
+      failureReason: err && err.message ? err.message : String(err),
+    });
+    announceAlert("Multiple-file selection could not be opened. See the Open Audio Diagnostics panel for details.");
   }
 }
 
@@ -276,6 +297,7 @@ async function handleOpenAudioInputChange() {
   if (!files || files.length === 0) return;
   await processOpenedFiles(Array.from(files), {
     pathway: "browser-input",
+    windowsNativeMultiSelect: false,
     nativeDialogCount: null,
     boundaryCount: null,
     readFailedCount: 0,
@@ -315,6 +337,7 @@ async function processOpenedFiles(fileArray, meta) {
 
   updateOpenAudioDiagnostics({
     pathway: meta.pathway,
+    windowsNativeMultiSelect: meta.windowsNativeMultiSelect,
     nativeDialogCount: meta.nativeDialogCount,
     boundaryCount: meta.boundaryCount,
     jsReceivedCount,
@@ -876,39 +899,40 @@ function focusElement(target) {
 function updateOpenAudioDiagnostics(stats) {
   if (!el.openAudioDiagnostics) return;
 
-  const isTauriPathway = stats.pathway === "tauri-dialog";
+  const isWindowsNativePathway = stats.pathway === "windows-native";
 
-  const multiSelectLine = isTauriPathway
-    ? "Multi-select requested: yes."
-    : "Multi-select requested: not applicable (browser file picker used).";
+  const multiSelectLine = isWindowsNativePathway
+    ? `Windows native multi-select requested: ${stats.windowsNativeMultiSelect ? "yes" : "no"}.`
+    : "Windows native multi-select requested: not applicable (browser file picker used).";
 
-  const nativeLine = isTauriPathway
-    ? `Native dialog returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
-    : "Native dialog: not applicable.";
+  const nativeLine = isWindowsNativePathway
+    ? `Windows picker returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
+    : "Windows picker: not applicable.";
 
-  // As of 0.1.4, picking and reading both happen in one Rust command
-  // (pick_and_read_audio_files) before anything crosses back to
-  // JavaScript — so "passed across the Rust/Tauri boundary" and "read
+  // As of 0.1.5, picking (via the wfd crate's native Windows dialog) and
+  // reading both happen in one Rust command before anything crosses back
+  // to JavaScript — so "passed across the Rust/Tauri boundary" and "read
   // successfully" are reported from the same single IPC response, not
-  // from two separate round trips the way an earlier architecture might
-  // have done it. Both are still reported as distinct numbers so a
-  // mismatch between them (something lost during Rust-side reading, or
-  // during IPC serialization back to JS) stays visible either way.
-  const boundaryLine = isTauriPathway
-    ? `Passed across the Rust/Tauri boundary: ${stats.boundaryCount} file${stats.boundaryCount === 1 ? "" : "s"}.`
+  // from two separate round trips a different architecture might use.
+  // Both are still reported as distinct numbers so a mismatch between
+  // them (something lost during Rust-side reading, or during IPC
+  // serialization back to JS) stays visible either way.
+  const boundaryLine = isWindowsNativePathway
+    ? `Passed across Rust/Tauri boundary: ${stats.boundaryCount} file${stats.boundaryCount === 1 ? "" : "s"}.`
     : "Rust/Tauri boundary: not applicable.";
 
-  const readLine = isTauriPathway
+  const readLine = isWindowsNativePathway
     ? `Files read successfully: ${stats.jsReceivedCount} of ${stats.boundaryCount}${stats.readFailedCount ? ` (${stats.readFailedCount} failed to read)` : ""}.`
     : `Files read successfully: ${stats.jsReceivedCount} (browser file picker already provides file data directly).`;
 
   el.openAudioDiagnostics.textContent = [
     `Last Open Audio operation, ${new Date().toLocaleTimeString()}:`,
+    stats.failureReason ? `The picker could not be opened: ${stats.failureReason}.` : null,
     multiSelectLine,
     nativeLine,
     boundaryLine,
     readLine,
-    `Received in JavaScript, ready to process: ${stats.jsReceivedCount} file${stats.jsReceivedCount === 1 ? "" : "s"}.`,
+    `Received in JavaScript: ${stats.jsReceivedCount} file${stats.jsReceivedCount === 1 ? "" : "s"}.`,
     `Supported audio files: ${stats.supportedCount}.`,
     `Files decoded: ${stats.decodedCount}${stats.failedDecodeCount ? ` (${stats.failedDecodeCount} failed to decode)` : ""}.`,
     `Unsupported files skipped: ${stats.skippedUnsupportedCount}.`,
