@@ -407,19 +407,89 @@ whether the native dialog itself returns all 15 paths on real Windows
 remains unconfirmed here. That is explicitly the open question 0.1.3
 exists to answer, not something this build claims to have resolved.
 
+## 0.1.4 — moved native file picking into Rust, based on 0.1.3's own evidence
+
+0.1.3's diagnostics did their job. Real Windows testing reported, verbatim:
+
+> Native dialog returned: 1 file.
+> JavaScript received: 1 file.
+> Files read from disk: 1 of 1.
+> Supported audio files: 1.
+> Files decoded: 1.
+> Documents opened: 1.
+
+Every stage downstream of "native dialog returned" matched it exactly —
+proof that this app's own file-processing pipeline was never the problem,
+across three straight builds of trying to harden it. The loss was
+upstream of all of it: in the `window.__TAURI__.dialog.open({ multiple:
+true })` call itself, or in the JS-global-binding layer between it and
+this app. 0.1.3 was correct not to touch decoding or filtering again on
+the strength of a guess — the diagnostics existed specifically to prevent
+another round of that, and they did.
+
+**Fixed** by removing that layer rather than continuing to poke at it:
+
+- A single new Rust command, `pick_and_read_audio_files` (see
+  `src-tauri/src/main.rs`), now does both the native file picking and the
+  file reading, entirely in Rust, in one round trip. It calls
+  `tauri-plugin-dialog`'s Rust API directly —
+  `app.dialog().file().add_filter(...).blocking_pick_files()`, the
+  variant the plugin's own docs recommend for use inside a command rather
+  than the main event loop — and reads each resulting path with
+  `std::fs::read`. The frontend (`app/js/audioEditorController.js`) calls
+  this one command via `window.__TAURI__.core.invoke(...)` and receives a
+  plain array of `{ name, path, data }` objects, which get wrapped in
+  ordinary `File` objects and handed to the exact same
+  `documentManager.openFiles()` pipeline every other Open Audio path
+  already used.
+- `tauri-plugin-fs` is no longer a dependency — nothing in this app calls
+  its JS-exposed commands anymore, since file bytes are read directly in
+  Rust now. Removed from `Cargo.toml`, `main.rs`, and the now-unused
+  `fs:*` / `dialog:*` capability grants were removed from
+  `capabilities/default.json` (custom app commands like this one are
+  allowed by default under `core:default` alone — no plugin-specific
+  permission entry was ever required for it).
+- A single failed file read no longer aborts the whole batch: each
+  path's read result is recorded independently (`files` for successes,
+  `read_errors` for failures) rather than one Rust-side operation
+  aborting on the first error.
+- The Open Audio Diagnostics panel was extended with two more stages
+  Dean's correction directive specifically asked for — "multi-select
+  requested" and "passed across the Rust/Tauri boundary" — so the very
+  first number reported after the next real test ("Native dialog
+  returned: N") is now coming from a fundamentally different code path
+  than the one that produced "1" three builds in a row, and every stage
+  after it stays visible for comparison.
+
+**What this build does and does not claim**, stated as plainly as
+possible per the correction directive: this is a real architectural
+change on the Rust side, grounded in what 0.1.3's own diagnostics
+actually proved rather than another guess — but **this development
+environment has no Rust toolchain and cannot compile or run the desktop
+app**, so whether `blocking_pick_files()` itself returns every selected
+path on real Windows is unverified here. If the next real test still
+reports "Native dialog returned: 1 file," that is now strong evidence the
+issue sits below the Rust plugin layer entirely — in the `rfd` crate
+`tauri-plugin-dialog` uses internally, in a Windows-specific dialog
+backend behavior, or in something about this specific Windows
+environment — which would be the next place to look, not this app's code
+again. That is a real, distinct next branch, not a hedge.
+
 ## Recommended next phase
 
-Build 0.1.3 via GitHub Actions and, on real Windows, select several files
+Build 0.1.4 via GitHub Actions and, on real Windows, select several files
 in one Open Audio operation, then open the Open Audio Diagnostics panel in
-the footer immediately after — it will report the exact count at every
-stage of the pipeline. That single result determines what happens next:
-if "Native dialog returned" is already less than the number of files
-selected, the problem is in the Tauri/Rust dialog call itself or how
-Windows is presenting the picker, not in this app's JavaScript; if it
-matches but a later stage drops, the diagnostics panel will show exactly
-which one. Confirm at the same time that the document/window title now
-correctly says "AccessibleAudioStudio Pro" from first launch. After the
-real multi-file count is confirmed working: a fair trial of the current
-document-switching combo box, then markers (Phase 6), since several
-editing operations here (set selection start/end, navigate by increment)
-already share the underlying mechanics markers will need.
+the footer immediately after. "Native dialog returned" is now the
+critical number: it comes from a Rust command that bypasses the
+JS-dialog-binding layer 0.1.3's diagnostics implicated, so this is a
+genuinely different test than the last three builds, not a repeat. If it
+still reports 1 regardless of selection size, the next place to look is
+below `tauri-plugin-dialog` itself — the `rfd` crate or a Windows-specific
+dialog backend behavior — not this app's code again. If it reports the
+real count, confirm every later stage matches through to "Documents
+opened," and confirm the document/window title still says
+"AccessibleAudioStudio Pro" from first launch. After the real multi-file
+count is confirmed working: a fair trial of the current document-switching
+combo box, then markers (Phase 6), since several editing operations here
+(set selection start/end, navigate by increment) already share the
+underlying mechanics markers will need.

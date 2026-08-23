@@ -21,7 +21,7 @@ import { announceStatus, announceAlert } from "./announcer.js";
 import { formatTimePrecise, formatDurationNatural } from "./timeFormat.js";
 import * as docs from "./documentManager.js";
 import * as bufUtil from "./audioBufferUtils.js";
-import { encodeWav, encodeMp3, extensionOf, SUPPORTED_AUDIO_EXTENSIONS } from "./audioCodec.js";
+import { encodeWav, encodeMp3, extensionOf } from "./audioCodec.js";
 import { BufferPlayer } from "./audioBufferPlayer.js";
 import * as clipboard from "./audioClipboard.js";
 import { registerAction } from "./shortcutService.js";
@@ -218,100 +218,68 @@ function isRunningInTauri() {
 /**
  * Open Audio's single entry point, used by both the button and Ctrl+O.
  *
- * In the desktop build this calls Tauri's own native dialog plugin
- * directly (window.__TAURI__.dialog.open) instead of relying on an HTML
- * `<input type="file" multiple">`. That HTML input is kept only as the
- * browser fallback below, for when this same app is run as a plain web
- * page (e.g. GitHub Pages) with no Tauri runtime present. The two paths
- * converge on the exact same processOpenedFiles() function afterward, so
- * every other rule (extension filtering, duplicate handling, one
- * completion announcement) is identical regardless of which picker was
- * used.
+ * In the desktop build this calls a custom Rust command,
+ * pick_and_read_audio_files (see src-tauri/src/main.rs), which shows the
+ * native multi-select file dialog AND reads every selected file's bytes,
+ * entirely in Rust, in one round trip. Earlier builds (0.1.2/0.1.3) called
+ * window.__TAURI__.dialog.open({ multiple: true }) directly from
+ * JavaScript instead — real Windows testing with the Open Audio
+ * Diagnostics panel proved that path was only ever returning one file to
+ * JavaScript regardless of how many were selected, which is why the
+ * picking itself moved into Rust for 0.1.4. See that command's doc
+ * comment for the full explanation.
+ *
+ * The HTML `<input type="file" multiple">` fallback below is kept only
+ * for when this same app runs as a plain web page with no Tauri runtime
+ * present (e.g. GitHub Pages). Both paths converge on the exact same
+ * processOpenedFiles() function afterward, so every other rule (extension
+ * filtering, duplicate handling, one completion announcement) is
+ * identical regardless of which picker was used.
  */
 async function triggerOpenAudioDialog() {
   if (isRunningInTauri()) {
-    await openAudioViaTauriDialog();
+    await openAudioViaTauriCommand();
   } else {
     el.openAudioInput.click();
   }
 }
 
-async function openAudioViaTauriDialog() {
+async function openAudioViaTauriCommand() {
   try {
-    const { open } = window.__TAURI__.dialog;
-    const selected = await open({
-      multiple: true,
-      filters: [
-        { name: "Audio", extensions: [...SUPPORTED_AUDIO_EXTENSIONS] },
-        { name: "All Files", extensions: ["*"] },
-      ],
-    });
+    const { invoke } = window.__TAURI__.core;
+    const result = await invoke("pick_and_read_audio_files");
+    // result: { native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
 
-    // Do not assume the shape of the result: it is null when the user
-    // cancels, a single string when only one file is picked (this can
-    // happen even with multiple:true, depending on the platform), or an
-    // array of strings for a genuine multi-file selection. Normalize to
-    // one array before anything else touches it.
-    const nativePaths = normalizeDialogResult(selected);
-    if (nativePaths.length === 0) return; // cancelled
+    if (result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0) {
+      return; // user cancelled the dialog
+    }
 
-    // Read every selected path independently — Promise.allSettled, not
-    // Promise.all, so one file failing to read can never silently drop
-    // the rest of the selection (a single rejected promise inside
-    // Promise.all aborts the whole batch and every other file with it).
-    const settled = await Promise.allSettled(nativePaths.map(readTauriPathAsFile));
-    const files = [];
-    let readFailedCount = 0;
-    settled.forEach((result) => {
-      if (result.status === "fulfilled") files.push(result.value);
-      else readFailedCount += 1;
+    const files = result.files.map((picked) => {
+      const file = new File([new Uint8Array(picked.data)], picked.name);
+      file.__sourcePath = picked.path;
+      return file;
     });
 
     await processOpenedFiles(files, {
       pathway: "tauri-dialog",
-      nativeDialogCount: nativePaths.length,
-      readFailedCount,
+      nativeDialogCount: result.native_dialog_count,
+      boundaryCount: result.files.length + result.read_errors.length,
+      readFailedCount: result.read_errors.length,
     });
   } catch (err) {
-    announceAlert("Could not open the file dialog. " + (err && err.message ? err.message : ""));
+    announceAlert("Could not open the file dialog. " + (err && err.message ? err.message : String(err)));
   }
-}
-
-/**
- * Normalize whatever the Tauri dialog's open() call returns into a plain
- * array of path strings, handling every documented case explicitly rather
- * than assuming one shape: null/undefined (cancelled), a single string
- * (one file picked), or an array of strings (multiple files picked).
- */
-function normalizeDialogResult(selected) {
-  if (selected == null) return [];
-  if (Array.isArray(selected)) return selected;
-  return [selected];
-}
-
-/**
- * Read one file path (returned by the Tauri dialog) into a real File
- * object, via the Tauri fs plugin. Everything downstream of this —
- * extension filtering, decoding, duplicate detection — works with plain
- * File objects exactly as it does for files selected through the HTML
- * input fallback, so none of that logic needs to know which picker was
- * used. The path is stamped onto the File as `__sourcePath` so
- * documentManager.js can detect "this exact file is already open" by
- * full path rather than by name alone (see sourceKeyOf there).
- */
-async function readTauriPathAsFile(path) {
-  const { readFile } = window.__TAURI__.fs;
-  const bytes = await readFile(path);
-  const name = path.split(/[\\/]/).pop() || path;
-  const file = new File([bytes], name);
-  file.__sourcePath = path;
-  return file;
 }
 
 async function handleOpenAudioInputChange() {
   const files = el.openAudioInput.files;
   if (!files || files.length === 0) return;
-  await processOpenedFiles(Array.from(files), { pathway: "browser-input", nativeDialogCount: null, readFailedCount: 0 });
+  await processOpenedFiles(Array.from(files), {
+    pathway: "browser-input",
+    nativeDialogCount: null,
+    boundaryCount: null,
+    readFailedCount: 0,
+  });
   el.openAudioInput.value = ""; // allow selecting the same file again later
 }
 
@@ -348,6 +316,7 @@ async function processOpenedFiles(fileArray, meta) {
   updateOpenAudioDiagnostics({
     pathway: meta.pathway,
     nativeDialogCount: meta.nativeDialogCount,
+    boundaryCount: meta.boundaryCount,
     jsReceivedCount,
     readFailedCount: meta.readFailedCount,
     supportedCount: opened.length + failed.length + first.alreadyOpen.length,
@@ -907,21 +876,39 @@ function focusElement(target) {
 function updateOpenAudioDiagnostics(stats) {
   if (!el.openAudioDiagnostics) return;
 
-  const nativeLine =
-    stats.pathway === "tauri-dialog"
-      ? `Native dialog returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
-      : "Native dialog: not applicable (browser file picker used).";
+  const isTauriPathway = stats.pathway === "tauri-dialog";
 
-  const readLine =
-    stats.pathway === "tauri-dialog"
-      ? `Files read from disk: ${stats.jsReceivedCount} of ${stats.nativeDialogCount} (${stats.readFailedCount} failed to read).`
-      : `Files read from disk: ${stats.jsReceivedCount} (browser file picker already provides file data directly).`;
+  const multiSelectLine = isTauriPathway
+    ? "Multi-select requested: yes."
+    : "Multi-select requested: not applicable (browser file picker used).";
+
+  const nativeLine = isTauriPathway
+    ? `Native dialog returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
+    : "Native dialog: not applicable.";
+
+  // As of 0.1.4, picking and reading both happen in one Rust command
+  // (pick_and_read_audio_files) before anything crosses back to
+  // JavaScript — so "passed across the Rust/Tauri boundary" and "read
+  // successfully" are reported from the same single IPC response, not
+  // from two separate round trips the way an earlier architecture might
+  // have done it. Both are still reported as distinct numbers so a
+  // mismatch between them (something lost during Rust-side reading, or
+  // during IPC serialization back to JS) stays visible either way.
+  const boundaryLine = isTauriPathway
+    ? `Passed across the Rust/Tauri boundary: ${stats.boundaryCount} file${stats.boundaryCount === 1 ? "" : "s"}.`
+    : "Rust/Tauri boundary: not applicable.";
+
+  const readLine = isTauriPathway
+    ? `Files read successfully: ${stats.jsReceivedCount} of ${stats.boundaryCount}${stats.readFailedCount ? ` (${stats.readFailedCount} failed to read)` : ""}.`
+    : `Files read successfully: ${stats.jsReceivedCount} (browser file picker already provides file data directly).`;
 
   el.openAudioDiagnostics.textContent = [
     `Last Open Audio operation, ${new Date().toLocaleTimeString()}:`,
+    multiSelectLine,
     nativeLine,
-    `JavaScript received: ${stats.jsReceivedCount} file${stats.jsReceivedCount === 1 ? "" : "s"}.`,
+    boundaryLine,
     readLine,
+    `Received in JavaScript, ready to process: ${stats.jsReceivedCount} file${stats.jsReceivedCount === 1 ? "" : "s"}.`,
     `Supported audio files: ${stats.supportedCount}.`,
     `Files decoded: ${stats.decodedCount}${stats.failedDecodeCount ? ` (${stats.failedDecodeCount} failed to decode)` : ""}.`,
     `Unsupported files skipped: ${stats.skippedUnsupportedCount}.`,
