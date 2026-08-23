@@ -21,7 +21,7 @@ import { announceStatus, announceAlert } from "./announcer.js";
 import { formatTimePrecise, formatDurationNatural } from "./timeFormat.js";
 import * as docs from "./documentManager.js";
 import * as bufUtil from "./audioBufferUtils.js";
-import { encodeWav, encodeMp3, extensionOf } from "./audioCodec.js";
+import { encodeWav, encodeMp3, extensionOf, SUPPORTED_AUDIO_EXTENSIONS } from "./audioCodec.js";
 import { BufferPlayer } from "./audioBufferPlayer.js";
 import * as clipboard from "./audioClipboard.js";
 import { registerAction } from "./shortcutService.js";
@@ -43,7 +43,7 @@ export function initAudioEditor() {
 
 export function registerEditorShortcutActions() {
   registerAction("openAudio", () => {
-    el.openAudioInput.click();
+    triggerOpenAudioDialog();
     return { executed: true, resultText: "Open Audio" };
   });
 
@@ -157,7 +157,7 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  el.openAudioButton.addEventListener("click", () => el.openAudioInput.click());
+  el.openAudioButton.addEventListener("click", () => triggerOpenAudioDialog());
   el.openAudioInput.addEventListener("change", handleOpenAudioInputChange);
   el.newAudioButton.addEventListener("click", handleNewAudio);
 
@@ -205,16 +205,116 @@ function bindEvents() {
 // Open / New / Close / Switch
 // ---------------------------------------------------------------------
 
+/**
+ * True when running inside the packaged Tauri desktop app (with
+ * app.withGlobalTauri enabled in tauri.conf.json), false in a plain
+ * browser (e.g. the GitHub Pages copy of this same app).
+ */
+function isRunningInTauri() {
+  return typeof window !== "undefined" && !!window.__TAURI__;
+}
+
+/**
+ * Open Audio's single entry point, used by both the button and Ctrl+O.
+ *
+ * In the desktop build this calls Tauri's own native dialog plugin
+ * directly (window.__TAURI__.dialog.open) instead of relying on an HTML
+ * `<input type="file" multiple">`. That HTML input is kept only as the
+ * browser fallback below, for when this same app is run as a plain web
+ * page (e.g. GitHub Pages) with no Tauri runtime present. The two paths
+ * converge on the exact same processOpenedFiles() function afterward, so
+ * every other rule (extension filtering, duplicate handling, one
+ * completion announcement) is identical regardless of which picker was
+ * used.
+ */
+async function triggerOpenAudioDialog() {
+  if (isRunningInTauri()) {
+    await openAudioViaTauriDialog();
+  } else {
+    el.openAudioInput.click();
+  }
+}
+
+async function openAudioViaTauriDialog() {
+  try {
+    const { open } = window.__TAURI__.dialog;
+    const selected = await open({
+      multiple: true,
+      filters: [
+        { name: "Audio", extensions: [...SUPPORTED_AUDIO_EXTENSIONS] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    });
+    if (!selected) return; // user cancelled the dialog
+
+    const paths = Array.isArray(selected) ? selected : [selected];
+    const files = await Promise.all(paths.map(readTauriPathAsFile));
+    await processOpenedFiles(files);
+  } catch (err) {
+    announceAlert("Could not open the file dialog. " + (err && err.message ? err.message : ""));
+  }
+}
+
+/**
+ * Read one file path (returned by the Tauri dialog) into a real File
+ * object, via the Tauri fs plugin. Everything downstream of this —
+ * extension filtering, decoding, duplicate detection — works with plain
+ * File objects exactly as it does for files selected through the HTML
+ * input fallback, so none of that logic needs to know which picker was
+ * used. The path is stamped onto the File as `__sourcePath` so
+ * documentManager.js can detect "this exact file is already open" by
+ * full path rather than by name alone (see sourceKeyOf there).
+ */
+async function readTauriPathAsFile(path) {
+  const { readFile } = window.__TAURI__.fs;
+  const bytes = await readFile(path);
+  const name = path.split(/[\\/]/).pop() || path;
+  const file = new File([bytes], name);
+  file.__sourcePath = path;
+  return file;
+}
+
 async function handleOpenAudioInputChange() {
   const files = el.openAudioInput.files;
   if (!files || files.length === 0) return;
-
-  const { opened, failed, skipped } = await docs.openFiles(files);
+  await processOpenedFiles(Array.from(files));
   el.openAudioInput.value = ""; // allow selecting the same file again later
+}
 
-  // One concise announcement for the entire selection, never one per file
-  // — whether that selection was 1 file or 15.
-  announceStatus(buildOpenSummary(opened.length, skipped.length, failed.length));
+/**
+ * Shared by both the Tauri dialog path and the browser `<input>` fallback.
+ * Opens every new file, and for any file that matches a document already
+ * open, asks once (not per file) whether to open another copy — see
+ * confirmReopenDuplicates. Ends with exactly one completion announcement
+ * covering the whole operation.
+ */
+async function processOpenedFiles(fileArray) {
+  const first = await docs.openFiles(fileArray);
+  let opened = first.opened;
+  let failed = first.failed;
+  const skipped = first.skipped;
+  let reopenedCount = 0;
+  let declinedCount = 0;
+
+  if (first.alreadyOpen.length > 0) {
+    if (confirmReopenDuplicates(first.alreadyOpen)) {
+      const second = await docs.openFiles(first.alreadyOpen, { allowDuplicates: true });
+      opened = opened.concat(second.opened);
+      failed = failed.concat(second.failed);
+      reopenedCount = second.opened.length;
+    } else {
+      declinedCount = first.alreadyOpen.length;
+    }
+  }
+
+  announceStatus(
+    buildOpenSummary({
+      openedCount: opened.length,
+      skippedCount: skipped.length,
+      failedCount: failed.length,
+      declinedCount,
+    })
+  );
 
   render();
   if (opened.length > 0) {
@@ -225,11 +325,29 @@ async function handleOpenAudioInputChange() {
 }
 
 /**
+ * One native confirm for the whole set of already-open files found in
+ * this Open operation — never one dialog per duplicate file, which would
+ * turn a single Open into a string of interruptions. Uses window.confirm,
+ * consistent with this app's existing, already-documented convention for
+ * infrequent, deliberate confirmations (Rename, Delete, Record Again).
+ */
+function confirmReopenDuplicates(duplicateFiles) {
+  if (duplicateFiles.length === 1) {
+    return window.confirm(`"${duplicateFiles[0].name}" is already open. Open another copy?`);
+  }
+  const names = duplicateFiles.map((f) => f.name).join(", ");
+  return window.confirm(
+    `${duplicateFiles.length} of the selected files are already open: ${names}. Open another copy of each?`
+  );
+}
+
+/**
  * Build the single completion announcement for an Open Audio operation,
  * e.g. "10 audio files opened." or "10 audio files opened. 5 unsupported
- * files skipped."
+ * files skipped." or "8 audio files opened. 1 already-open file not
+ * reopened."
  */
-function buildOpenSummary(openedCount, skippedCount, failedCount) {
+function buildOpenSummary({ openedCount, skippedCount, failedCount, declinedCount = 0 }) {
   const parts = [];
 
   parts.push(
@@ -246,6 +364,14 @@ function buildOpenSummary(openedCount, skippedCount, failedCount) {
 
   if (failedCount > 0) {
     parts.push(failedCount === 1 ? "1 file could not be opened." : `${failedCount} files could not be opened.`);
+  }
+
+  if (declinedCount > 0) {
+    parts.push(
+      declinedCount === 1
+        ? "1 already-open file not reopened."
+        : `${declinedCount} already-open files not reopened.`
+    );
   }
 
   return parts.join(" ");

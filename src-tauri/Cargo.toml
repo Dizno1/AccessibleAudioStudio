@@ -1,10 +1,10 @@
 [package]
 name = "accessibleaudiostudio-pro"
-version = "0.1.1"
+version = "0.1.2"
 description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.77.2"
 
 # See https://tauri.app/v1/api/config/ / https://v2.tauri.app for reference.
 # This crate hosts the AccessibleAudioStudio Pro web app (see ../index.html
@@ -18,6 +18,17 @@ rust-version = "1.77"
 # the two can be installed side by side on the same Windows machine without
 # Windows treating a Pro test build as an upgrade of, or collision with, the
 # published free edition.
+#
+# tauri-plugin-dialog / tauri-plugin-fs (0.1.2): "Open Audio" now opens
+# files through Tauri's own native file dialog (see ../src-tauri/src/main.rs
+# and ../app/js/audioEditorController.js) instead of relying solely on an
+# HTML `<input type="file" multiple">`. This is what makes real multi-file
+# selection reliable in the packaged desktop app; the HTML input remains as
+# a fallback only for when this same app is run as a plain web page with no
+# Tauri runtime present (e.g. GitHub Pages). app.withGlobalTauri is set to
+# true in tauri.conf.json specifically so the frontend can call
+# window.__TAURI__.dialog / window.__TAURI__.fs directly with no npm
+# package or bundler needed, matching this project's zero-build-step setup.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -25,6 +36,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-window-state = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

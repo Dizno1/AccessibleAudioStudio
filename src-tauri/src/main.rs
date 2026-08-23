@@ -11,6 +11,14 @@ fn main() {
         // position when practical" requirement — handled entirely by this
         // plugin, no custom persistence code needed.
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Native "Open Audio" file dialog (see app/js/audioEditorController.js)
+        // and the file-read access needed to load whatever the user selected
+        // there. Using Tauri's own dialog, rather than relying solely on an
+        // HTML <input type="file" multiple">, is what makes genuine
+        // multi-file selection reliable in the packaged app — see
+        // src-tauri/Cargo.toml for the full explanation.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .run(tauri::generate_context!())
         .expect("error while running AccessibleAudioStudio Pro");
 }

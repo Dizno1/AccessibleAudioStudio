@@ -28,13 +28,14 @@ See `docs/Roadmap.md` for the complete list of what was built, known limitations
 A new "Audio Editor (Pro)" panel adds file-based audio editing alongside
 the recording workflow above, without changing it. A user can currently:
 
-- Open one or several existing audio files at once (WAV, MP3, M4A, FLAC, OGG — mixed formats in a single Open operation), or create a New Audio document
+- Open one or several existing audio files at once (WAV, MP3, M4A, FLAC, OGG — mixed formats in a single Open operation), or create a New Audio document. In the packaged desktop app, this uses Tauri's own native file dialog (not just an HTML file input) specifically so multi-file selection is reliable — see "Application identity" below for the plugins this requires
 - Work with multiple open audio documents at once, each with its own accessible title
 - Navigate precisely by 10 seconds, 1 second, or 100 milliseconds, with position and selection always spoken in natural language ("1 minute 14.250 seconds")
 - Set a selection, preview it, and hear its start/end/duration on demand
 - Cut, Copy, Paste, Delete, Trim to Selection, Select All, Undo, and Redo — including copying audio between two different open documents
 - Have routine format differences (sample rate, mono/stereo) reconciled automatically on paste
 - Save or Save As to an ordinary WAV or MP3 file
+- Get asked before a file that's already open is opened again as a second copy, rather than silently ending up with two copies open
 
 See `docs/Pro Roadmap.md` for exactly what's implemented vs. deferred against the full 12-phase Pro roadmap, and `docs/Audio Editing (Pro).md` for how it behaves for a keyboard and screen reader user, including known limitations.
 
@@ -131,7 +132,7 @@ AccessibleAudioStudio's browser-based application (`index.html` and `app/`) is p
 
 `.github/workflows/build-windows.yml` builds the real installers on a genuine Windows machine (a GitHub-hosted `windows-latest` runner) automatically:
 
-- **Push a Pro version tag** (e.g. `git tag pro-v0.1.1 && git push origin pro-v0.1.1`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
+- **Push a Pro version tag** (e.g. `git tag pro-v0.1.2 && git push origin pro-v0.1.2`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
 - **Or run it manually** from the Actions tab ("Build Windows Installer" > "Run workflow") to just build and download the installers as workflow artifacts, without creating a release -- useful while testing a change.
 
 This is a real build on a real Windows machine every time -- not a simulation. See `Release/README.md` for the full step-by-step.
@@ -221,7 +222,22 @@ These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`;
 | Tauri identifier | `org.opendoordesign.accessibleaudiostudio` | `org.opendoordesign.accessibleaudiostudio.pro` |
 | Cargo/package name | `accessibleaudiostudio` | `accessibleaudiostudio-pro` |
 | Window title | AccessibleAudioStudio | AccessibleAudioStudio Pro |
-| Version | 1.0.0 | 0.1.1 (current test build — see "Pro version numbering" below) |
+| Version | 1.0.0 | 0.1.2 (current test build — see "Pro version numbering" below) |
+
+#### Native file dialog (since 0.1.2)
+
+Since 0.1.2, "Open Audio" in the packaged desktop app uses Tauri's own
+`tauri-plugin-dialog` and `tauri-plugin-fs` plugins (see
+`src-tauri/Cargo.toml` and `src-tauri/src/main.rs`) to open the real native
+Windows file picker directly, instead of relying solely on an HTML
+`<input type="file" multiple">`. This is what makes genuine multi-file
+selection reliable — the HTML input remains only as a fallback for when
+this same app is run as a plain web page with no Tauri runtime present
+(e.g. GitHub Pages). `app.withGlobalTauri` is set to `true` in
+`tauri.conf.json` so the frontend can call `window.__TAURI__.dialog` and
+`window.__TAURI__.fs` directly with no npm package or bundler, matching
+this project's zero-build-step setup. Cargo will fetch these two plugins
+automatically on the next build; no separate install step is needed.
 
 #### Pro version numbering
 
@@ -233,7 +249,8 @@ same reason: it lets a bug report like "this happened in 0.1.3 but not
 
 - `0.1.0` — initial Pro editor (Open/New Audio, navigation, selection, editing, Save/Save As)
 - `0.1.1` — fixed Open Audio only opening one file out of a multi-file selection (see `docs/Pro Roadmap.md`)
-- `0.1.2`, … — subsequent test/fix builds
+- `0.1.2` — real fix for multi-file Open (native Tauri dialog, not just the HTML input), duplicate-file handling, and a Design Philosophy and Standards compliance pass (landmarks, skip links, footer, branding) — see `docs/Pro Roadmap.md`
+- `0.1.3`, … — subsequent test/fix builds
 - `0.2.0` — a meaningful new feature milestone (e.g. markers)
 - eventually `1.0.0` — first production Pro release
 
@@ -254,15 +271,15 @@ place to remember to update.
 
 ## GitHub Releases
 
-Pushing a Pro version tag (`git tag pro-v0.1.1 && git push origin pro-v0.1.1`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
+Pushing a Pro version tag (`git tag pro-v0.1.2 && git push origin pro-v0.1.2`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
 
 1. After the workflow finishes, open the draft release on GitHub (Releases tab).
-2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.1 (Windows)," and adjust if needed.
+2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.2 (Windows)," and adjust if needed.
 3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing. If the free AccessibleAudioStudio is also installed on that machine, confirm both apps still work independently afterward.
 4. Write release notes covering what's new or changed since the last Pro build, any known issues, and which Windows versions were tested.
 5. Publish the release. Keep every previous release's assets attached to its own tagged release rather than overwriting them, so there's a complete version history to link back to or roll back to if needed.
-6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.1/AccessibleAudioStudio Pro_0.1.1_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
+6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.2/AccessibleAudioStudio Pro_0.1.2_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
 
 ## Recommended next phase
 
-Build and install Pro 0.1.1 and re-run the multi-file Open Audio test that found the 0.1.0 bug (select many files at once in the Windows Open dialog, including at least one unsupported file type, and confirm every supported file opens as its own document with one concise completion announcement). See `docs/Pro Roadmap.md` for exactly what changed. After that, continue real screen reader testing (JAWS/NVDA/Narrator) of the Audio Editor (Pro) panel, including a fair trial of the current document-switching combo box with several documents actually open before any decision about an Audacity-style separate-window model.
+Build 0.1.2 via GitHub Actions (this environment has no Rust toolchain, so this genuinely needs a real build) and confirm, in order: it still coexists cleanly with the free edition; a real multi-file Open Audio selection (several files at once, including at least one unsupported type) opens every supported file with one concise completion announcement; opening an already-open file prompts once rather than silently duplicating; and a real screen reader pass over the H1/title, skip links, footer, and reduced landmark structure. See `docs/Pro Roadmap.md` for exactly what changed and why the previous fix wasn't enough. After that, continue toward a fair trial of the current document-switching combo box with several documents actually open, before any decision about an Audacity-style separate-window model.

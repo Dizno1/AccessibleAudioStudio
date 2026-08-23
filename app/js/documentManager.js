@@ -27,8 +27,47 @@ export function setActiveDocument(id) {
 }
 
 /**
+ * The key used to detect "this source file is already open." The full
+ * file path when one is known (desktop build, via the Tauri file dialog —
+ * see readTauriPathAsFile in audioEditorController.js, which stamps a
+ * `__sourcePath` property onto the File it constructs), otherwise the
+ * filename alone as a best-effort fallback. Browser File objects never
+ * expose a real path (a deliberate browser security restriction), so
+ * filename-only matching is the documented limitation of the fallback
+ * path — it can't distinguish two different files that happen to share a
+ * name in different folders, but it does catch the exact case reported:
+ * opening the same file twice.
+ */
+function sourceKeyOf(file) {
+  return file.__sourcePath || file.name;
+}
+
+/**
+ * Given a candidate list of files, split them into files that are new
+ * (safe to open immediately) and files that match the source of a
+ * document already open (need the user's decision before opening again).
+ * Only supported-extension files are considered — an unsupported file is
+ * never a "duplicate", it's just unsupported.
+ * @param {File[]} files
+ * @returns {{newFiles: File[], alreadyOpen: File[]}}
+ */
+function partitionByAlreadyOpen(files) {
+  const openKeys = new Set(documents.map((d) => d.sourceKey).filter(Boolean));
+  const newFiles = [];
+  const alreadyOpen = [];
+  for (const file of files) {
+    if (isSupportedAudioExtension(file.name) && openKeys.has(sourceKeyOf(file))) {
+      alreadyOpen.push(file);
+    } else {
+      newFiles.push(file);
+    }
+  }
+  return { newFiles, alreadyOpen };
+}
+
+/**
  * Open one or more audio files as new documents, in a single operation.
- * Every file is sorted into exactly one of three outcomes:
+ * Every file is sorted into exactly one of four outcomes:
  *   - opened: a supported audio file that decoded successfully and is now
  *     its own audio document.
  *   - failed: a file with a supported extension that still failed to
@@ -39,15 +78,29 @@ export function setActiveDocument(id) {
  *     isSupportedAudioExtension in audioCodec.js — specifically so that
  *     one unsupported file in a folder full of audio can never stall or
  *     block the rest of the selection from opening.
+ *   - alreadyOpen: a supported file whose source matches a document
+ *     that's already open. These are never silently opened as a second
+ *     copy — the caller (audioEditorController.js) is responsible for
+ *     asking the user and, if confirmed, calling openFiles again on just
+ *     these files with `allowDuplicates: true`.
  * @param {FileList|File[]} files
- * @returns {Promise<{opened: AudioDocument[], failed: {file: File, error: Error}[], skipped: File[]}>}
+ * @param {Object} [options]
+ * @param {boolean} [options.allowDuplicates] - when true, skips the
+ *   already-open check entirely (used for the confirmed "open another
+ *   copy" pass). Every file is treated as new.
+ * @returns {Promise<{opened: AudioDocument[], failed: {file: File, error: Error}[], skipped: File[], alreadyOpen: File[]}>}
  */
-export async function openFiles(files) {
+export async function openFiles(files, { allowDuplicates = false } = {}) {
+  const fileArray = Array.from(files);
+  const { newFiles, alreadyOpen } = allowDuplicates
+    ? { newFiles: fileArray, alreadyOpen: [] }
+    : partitionByAlreadyOpen(fileArray);
+
   const opened = [];
   const failed = [];
   const skipped = [];
 
-  for (const file of Array.from(files)) {
+  for (const file of newFiles) {
     if (!isSupportedAudioExtension(file.name)) {
       skipped.push(file);
       continue;
@@ -60,6 +113,7 @@ export async function openFiles(files) {
         buffer,
         baseName,
         sourceExtension: extensionOf(file.name) || "wav",
+        sourceKey: sourceKeyOf(file),
       });
       documents.push(doc);
       opened.push(doc);
@@ -72,7 +126,7 @@ export async function openFiles(files) {
     activeId = opened[opened.length - 1].id;
   }
 
-  return { opened, failed, skipped };
+  return { opened, failed, skipped, alreadyOpen };
 }
 
 /** Create a new empty audio document. Matches the currently-active document's format if one exists, otherwise CD-quality stereo defaults. */

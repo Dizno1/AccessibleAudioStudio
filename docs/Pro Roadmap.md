@@ -171,11 +171,171 @@ document-switching model are untouched, so this fix can be evaluated with
 several documents genuinely open at once before any decision about an
 Audacity-style separate-window model.
 
+## Fixed — 0.1.2: the 0.1.1 Open Audio fix wasn't enough, plus duplicate handling and a standards pass
+
+Real screen reader testing of 0.1.1 found multi-file Open Audio was
+**still** only opening one file. That's a genuine finding, not a retest of
+the same bug: the 0.1.1 fix corrected real problems in how selected files
+were *processed* (extension filtering, a decode timeout), verified with
+unit tests against mocked File objects — but those tests never exercised
+the actual native file-selection mechanism itself, which is exactly what
+testing on real Windows/WebView2 caught. Per the correction directive,
+this fix does not lean on another round of the same kind of unit test to
+call it done — see "What's actually verified" below.
+
+**Root cause:** the app was relying on an HTML `<input type="file"
+multiple>` inside the packaged WebView2 app to produce the native Windows
+multi-select dialog. That mechanism is a known weak point for multi-file
+selection specifically inside embedded webviews (Tauri/WebView2), as
+opposed to a full browser tab — Tauri's own documentation recommends its
+native dialog plugin for exactly this reason. The HTML input's `multiple`
+attribute and the file-processing code behind it were correct; the
+selection mechanism above them was not reliable in this runtime.
+
+**Fixed** in `app/js/audioEditorController.js`, `src-tauri/Cargo.toml`,
+`src-tauri/src/main.rs`, and `src-tauri/capabilities/default.json`:
+
+- "Open Audio" now calls Tauri's native dialog plugin
+  (`window.__TAURI__.dialog.open({ multiple: true, ... })`) directly when
+  running in the packaged desktop app, which invokes the real Windows
+  picker through Tauri/Rust rather than through the webview's own HTML
+  input handling. Selected paths are read into real `File` objects via the
+  Tauri fs plugin (`window.__TAURI__.fs.readFile`), then handed to the
+  exact same `documentManager.openFiles()` pipeline the HTML-input path
+  already used and that 0.1.1 hardened — so extension filtering, the
+  decode timeout, and the one-line completion announcement all apply
+  identically regardless of which picker was used.
+- The HTML `<input type="file" multiple>` fallback is kept, but now used
+  only when no Tauri runtime is present (e.g. this same app running as a
+  plain web page on GitHub Pages).
+- `app.withGlobalTauri` enabled in `tauri.conf.json` so the frontend can
+  call `window.__TAURI__.dialog` / `.fs` directly with no npm package or
+  bundler — this project has no build step, and this is Tauri's supported
+  way to expose plugin JS APIs to a page that isn't bundled.
+- `tauri-plugin-dialog` and `tauri-plugin-fs` added as Cargo dependencies
+  and registered in `main.rs`; `dialog:default`, `fs:default`, and
+  `fs:allow-read-file` granted in `capabilities/default.json`. No static
+  filesystem scope was added — the dialog plugin's own `open()` command
+  dynamically grants fs scope for exactly the paths the user picks, which
+  is the documented, intended pairing of these two plugins.
+
+**What's actually verified (and what isn't):** every JS-side change was
+re-run through the same unit tests as 0.1.1 (extension filtering, decode
+timeout, one-line summary phrasing) and those still pass — but that only
+proves the processing logic, which was never the problem. The actual fix
+here is on the Rust/Tauri side, and **this development environment has no
+Rust toolchain and cannot compile or run the desktop app**, so the native
+dialog integration itself has not been built or exercised anywhere. This
+is explicitly not being represented as fixed-and-confirmed — it's fixed
+and needs the real Windows build (`.github/workflows/build-windows.yml`)
+to prove the Cargo dependencies resolve, the plugins initialize, and the
+dialog actually returns multiple paths on a real Windows machine.
+
+### Issue 2 — duplicate files, fixed
+
+`app/js/documentManager.js` now tracks a `sourceKey` per open document —
+the full file path when one is known (every file opened via the native
+Tauri dialog now carries its real path), falling back to filename alone
+only in the browser-fallback path, which is a documented limitation since
+browsers don't expose a file's path for security reasons. Before opening
+any file, it's checked against every already-open document's `sourceKey`:
+
+- A file that matches nothing already open opens immediately, same as
+  before.
+- A file that matches an already-open document is held back rather than
+  opened or silently renamed — the batch keeps going for every other file
+  in the same selection (a mix of new and already-open files in one Open
+  operation opens the new ones right away).
+- If any files were held back, **one** `window.confirm` covers the whole
+  set — "`Interview.mp3` is already open. Open another copy?" for a single
+  match, or a combined sentence naming all of them for several — never one
+  dialog per duplicate. Confirming opens them as explicit extra copies
+  (using the existing "(2)" title-uniqueness logic, which is otherwise
+  unrelated to duplicate detection); declining leaves them closed and adds
+  to the one final completion announcement, e.g. "7 audio files opened. 3
+  unsupported files skipped. 1 already-open file not reopened."
+
+Verified with unit tests: opening the same source path twice is caught and
+held back; a confirmed reopen correctly produces a second document titled
+with "(2)"; a different file that merely shares a name with nothing open
+is unaffected; a mixed batch (one new file, one duplicate) opens the new
+file immediately and reports the duplicate separately.
+
+### Issue 3 — Design Philosophy and Standards compliance, fixed
+
+Reread the DesignPhilosophyAndStandards repository in full before changing
+anything, per the directive — including `Patterns/Navigation.md`,
+`Standards/Application Structure Standards.md`, `Standards/Accessibility
+Standards.md`, `Patterns/Dialogs.md`, `Patterns/Focus Management.md`, and
+`Components/CSS/odd-theme.css` / `odd-layout.css` (the actual shared CSS,
+not just the prose standards describing it).
+
+**Landmarks/regions reduced.** The five `aria-labelledby`-bearing
+`<section>` panels (Microphone Setup, Recording, Playback, Recording
+Library, Audio Editor) each exposed a `region` landmark purely because
+they had an accessible name — removing `aria-labelledby` from all five
+(in `index.html`) drops that landmark role entirely while leaving the
+`<h2>` heading, visual styling, and DOM structure completely unchanged, so
+heading-level navigation still works exactly as before. `main` is the only
+landmark left inside the page body, plus the standard implicit `header`
+(banner) and `footer` (contentinfo) — down from six regions to one.
+
+**Skip links added**, using the real multi-link markup from
+`Components/CSS/odd-layout.css` (`.skip-links` wrapping `.skip-link`
+anchors, revealed on focus via `transform: translateY`, replacing this
+app's older off-screen-position technique): "Skip to main content," "Skip
+to Recording," and "Skip to Audio Editor" — the two genuinely major
+working areas, per the directive, without turning every panel into its own
+skip target. `tabindex="-1"` added to `#main-content`, `#recording-heading`,
+and `#editor-heading` so activating a skip link reliably moves focus, not
+just scroll position.
+
+**Footer added**, inside the existing `<footer>` (already a landmark by
+being a direct child of `<body>`): one line reading "Open Door Design —
+Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version
+0.1.2." — plain text, no new landmark, no decoration, ahead of the
+existing Keyboard Shortcuts / Diagnostics disclosures which are
+unchanged. The version string is not templated (this project has no build
+step), so it must be updated by hand in `index.html` alongside every other
+version-bump location — added to the synchronized-fields list this repo
+already tracks.
+
+**Branding corrected.** The `<h1>` now reads "AccessibleAudioStudio Pro"
+(was "AccessibleAudioStudio"), matching the installed desktop identity;
+the unsupported-browser notice heading and the `<title>` were corrected
+the same way.
+
+**Real design tokens applied**, replacing the placeholder colors flagged
+as provisional since the free app's Phase 2: `--color-accent` is now
+`#0B5D3B` (Open Door Design's actual primary green, from
+`odd-theme.css`), and focus indicators use a separate, distinct token,
+`#8A5A00`, rather than reusing the accent color — this repository's own
+tokens keep those two deliberately different, which this app's CSS didn't
+before.
+
+**Not done as part of this pass, deliberately:** no new dialog component,
+no additional panels, no explanatory or permanent instructional text —
+per "Interface Simplicity," the duplicate-file confirmation still uses the
+same plain `window.confirm` this app already uses elsewhere, not the full
+`role="dialog"` pattern documented in `Patterns/Dialogs.md`, consistent
+with this app's existing, already-accepted native-dialog limitation.
+
+**Verified:** axe-core re-run against the full page (every normally-hidden
+panel and form shown, same as previous passes) — 0 violations across 36
+checks; confirmed 0 explicit `region`-role sections remain; confirmed
+exactly one `<h1>` reading "AccessibleAudioStudio Pro"; confirmed all
+three skip links are present with working `href` targets. **Not
+verified:** a real screen reader pass over any of this — per the
+directive, that happens after this build is returned, not before.
+
 ## Recommended next phase
 
-Real screen reader testing (JAWS, NVDA, Narrator at minimum) of everything
-in this milestone, per the engineering directive. After that: markers
-(Phase 6), since several editing operations here (set selection start/end,
-navigate by increment) already share the underlying mechanics markers will
-need, and Undo/Redo now applies just as usefully to real recordings as to
-opened files.
+Build 0.1.2 via GitHub Actions and confirm on real Windows: the native
+dialog actually opens multiple files in one operation (the thing 0.1.1's
+unit tests couldn't prove), the duplicate-file confirmation reads
+correctly with a real screen reader, and the reduced landmark structure,
+skip links, footer, and branding hold up under JAWS/NVDA/Narrator. After
+that: a fair trial of the current document-switching combo box now that
+multi-file opening should actually work, then markers (Phase 6), since
+several editing operations here (set selection start/end, navigate by
+increment) already share the underlying mechanics markers will need.

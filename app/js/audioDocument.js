@@ -25,13 +25,18 @@ export class AudioDocument {
    * @param {string} opts.baseName - filename without the "- AccessibleAudioStudio Pro" suffix, e.g. "Interview.wav"
    * @param {string} opts.sourceExtension - "wav" | "mp3" | "m4a" | "flac" | "ogg" | ""
    * @param {boolean} [opts.isNew] - true for a New Audio document with no source file
+   * @param {string|null} [opts.sourceKey] - identifies the file this document was opened from,
+   *   for already-open detection (see documentManager.js). The full file path when known
+   *   (desktop build), otherwise the filename as a best-effort fallback (browser build,
+   *   where the File API doesn't expose a path). null for a New Audio document.
    */
-  constructor({ buffer, baseName, sourceExtension, isNew = false }) {
+  constructor({ buffer, baseName, sourceExtension, isNew = false, sourceKey = null }) {
     this.id = "doc-" + Date.now() + "-" + Math.random().toString(16).slice(2);
     this.buffer = buffer;
     this.baseName = baseName;
     this.sourceExtension = sourceExtension || "wav";
     this.isNew = isNew;
+    this.sourceKey = sourceKey;
 
     this.history = []; // past buffers, most recent last
     this.future = []; // buffers undone, for redo

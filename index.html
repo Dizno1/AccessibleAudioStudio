@@ -3,30 +3,34 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Audio Recording - AccessibleAudioStudio</title>
+  <title>Audio Recording - AccessibleAudioStudio Pro</title>
   <link rel="stylesheet" href="app/css/styles.css" />
 </head>
 <body>
-  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="skip-links">
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <a class="skip-link" href="#recording-heading">Skip to Recording</a>
+    <a class="skip-link" href="#editor-heading">Skip to Audio Editor</a>
+  </div>
 
   <!-- Live regions for status announcements. Visually hidden, always present. -->
   <div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="alert-announcer" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
   <header class="app-header">
-    <h1>AccessibleAudioStudio</h1>
-    <p class="tagline">A professional recording environment built for keyboard and screen reader users.</p>
+    <h1>AccessibleAudioStudio Pro</h1>
+    <p class="tagline">A professional recording and editing environment built for keyboard and screen reader users.</p>
   </header>
 
-  <main id="main-content">
+  <main id="main-content" tabindex="-1">
 
     <!-- Unsupported browser notice, hidden unless needed -->
     <section id="unsupported-notice" class="notice notice--error" hidden>
-      <h2>This browser cannot run AccessibleAudioStudio</h2>
+      <h2>This browser cannot run AccessibleAudioStudio Pro</h2>
       <p id="unsupported-details"></p>
     </section>
 
-    <section aria-labelledby="setup-heading" class="panel">
+    <section class="panel">
       <h2 id="setup-heading">Microphone Setup</h2>
 
       <p id="mic-status">Microphone access has not been enabled yet.</p>
@@ -44,8 +48,8 @@
       </div>
     </section>
 
-    <section aria-labelledby="recording-heading" class="panel">
-      <h2 id="recording-heading">Recording</h2>
+    <section class="panel">
+      <h2 id="recording-heading" tabindex="-1">Recording</h2>
 
       <p id="recording-status">Not recording.</p>
 
@@ -86,7 +90,7 @@
       </div>
     </section>
 
-    <section aria-labelledby="playback-heading" class="panel">
+    <section class="panel">
       <h2 id="playback-heading">Playback</h2>
 
       <p id="playback-status">No recording selected for playback.</p>
@@ -106,15 +110,15 @@
       </div>
     </section>
 
-    <section aria-labelledby="library-heading" class="panel">
+    <section class="panel">
       <h2 id="library-heading">Recording Library</h2>
       <div id="library-container">
         <p>Loading your recordings…</p>
       </div>
     </section>
 
-    <section aria-labelledby="editor-heading" class="panel">
-      <h2 id="editor-heading">Audio Editor (Pro)</h2>
+    <section class="panel">
+      <h2 id="editor-heading" tabindex="-1">Audio Editor (Pro)</h2>
       <p>Open one or more audio files, or start a new empty audio document, to edit and combine audio.</p>
 
       <div class="button-row">
@@ -205,6 +209,8 @@
   </main>
 
   <footer class="app-footer">
+    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.1.2.</p>
+
     <details>
       <summary>Keyboard Shortcuts</summary>
       <ul>

@@ -1,25 +1,27 @@
-/* AccessibleAudioStudio styles
+/* AccessibleAudioStudio Pro styles
    Principle: nothing important is ever conveyed by color, icon, or layout
    alone. Styling here is purely cosmetic polish on top of a page that is
    already fully understandable with CSS turned off entirely.
 
-   --color-accent below is GREEN, matching Open Door Design's blue-and-green
-   color-pairing guardrail (blue is not a primary interface color). #1B5E20
-   was chosen for a verified ~7.9:1 contrast ratio against white text/panels
-   — well past AA — but it is a placeholder, not a value pulled from the
-   actual DesignPhilosophyAndStandards repository (this environment has no
-   access to fetch it). Replace with the exact approved green token when
-   available and re-verify the contrast numbers in the comments below still
-   hold. */
+   Tokens below are the real values from the Open Door Design
+   DesignPhilosophyAndStandards repository (Components/CSS/odd-theme.css),
+   not the placeholder greens used in earlier builds of this app. Primary
+   green (#0B5D3B) is used for accents/buttons; focus uses a separate,
+   distinct amber/gold (#8A5A00) rather than reusing the accent color, per
+   that repository's own token set. */
 
 :root {
-  --color-bg: #ffffff;
-  --color-text: #1a1a1a;
-  --color-accent: #1b5e20; /* ~7.9:1 vs white — placeholder pending exact brand token, see note above */
-  --color-border: #6b6b6b;
+  --color-bg: #F7FBF8;
+  --color-text: #111111;
+  --color-text-muted: #2F3437;
+  --color-accent: #0B5D3B; /* Open Door Design primary green (odd-color-primary) */
+  --color-accent-dark: #08452C;
+  --color-secondary-dark: #111111; /* footer background, per odd-layout.css */
+  --color-border: #6E7B82;
   --color-error-bg: #fdecea;
-  --color-error-text: #7a1212;
-  --focus-outline: 3px solid var(--color-accent);
+  --color-error-text: #8F1D16;
+  --color-focus: #8A5A00; /* Open Door Design focus token — deliberately distinct from the accent green */
+  --focus-outline: 3px solid var(--color-focus);
   --font-base: 1.05rem;
   --min-target: 3rem; /* 48px — Open Door Design's touch-target standard */
 }
@@ -54,22 +56,43 @@ h1, h2, h3 {
 
 .tagline {
   margin-top: 0;
-  color: #333;
+  color: var(--color-text-muted);
+}
+
+/* Skip links: corrected technique from the Open Door Design shared CSS
+   (odd-layout.css) — a translateY-based reveal rather than the old
+   absolute-position-off-screen approach, which used to collapse the link
+   into a narrow column when focused. */
+.skip-links {
+  position: fixed;
+  inset-block-start: 0.5rem;
+  inset-inline-start: 0.5rem;
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: calc(100vw - 1rem);
 }
 
 .skip-link {
-  position: absolute;
-  left: -999px;
-  top: auto;
-  background: var(--color-accent);
+  transform: translateY(calc(-100% - 1rem));
+  width: max-content;
+  max-width: calc(100vw - 1rem);
+  white-space: nowrap;
+  background: var(--color-secondary-dark);
   color: #fff;
   padding: 0.75rem 1rem;
-  z-index: 100;
+  border-radius: 6px;
 }
 
 .skip-link:focus {
-  left: 1rem;
-  top: 1rem;
+  transform: translateY(0);
+}
+
+@media (max-width: 22rem) {
+  .skip-link {
+    white-space: normal;
+  }
 }
 
 .sr-only {
@@ -223,7 +246,7 @@ button:not(:disabled):hover,
 .recording-item__meta,
 .recording-item__notes {
   margin: 0.25rem 0;
-  color: #333;
+  color: var(--color-text-muted);
 }
 
 .recording-item__actions {
@@ -233,10 +256,23 @@ button:not(:disabled):hover,
   margin-top: 0.65rem;
 }
 
+/* Footer background/text per the Open Door Design shared layout
+   convention (odd-layout.css: footer, #footer { background:
+   --odd-color-secondary-dark; color: #FFFFFF; }). */
 .app-footer {
   margin-top: 2rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--color-border);
+  padding: 1.5rem 1.25rem;
+  background: var(--color-secondary-dark);
+  color: #fff;
+  border-radius: 6px;
+}
+
+.app-footer summary {
+  cursor: pointer;
+}
+
+.footer-meta {
+  margin: 0 0 1rem 0;
 }
 
 @media (max-width: 480px) {

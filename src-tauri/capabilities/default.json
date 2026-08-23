@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the AccessibleAudioStudio Pro main window. The app itself calls no Tauri commands — microphone access, recording, playback, and storage are all standard web APIs (getUserMedia, MediaRecorder, IndexedDB) handled by the WebView2 runtime, not by Tauri IPC. Only the window-state plugin needs an explicit permission here.",
+  "description": "Capabilities for the AccessibleAudioStudio Pro main window. Most of the app calls no Tauri commands at all — microphone access, recording, playback, and storage are all standard web APIs (getUserMedia, MediaRecorder, IndexedDB) handled by the WebView2 runtime, not Tauri IPC. Open Audio is the exception: it uses the dialog plugin's native file picker and the fs plugin's read_file command (see app/js/audioEditorController.js) instead of an HTML file input, for reliable multi-file selection. dialog:allow-open's own scope-injection covers exactly the paths the user picks there, so fs:allow-read-file needs no separate static path scope here.",
   "windows": ["main"],
-  "permissions": ["core:default", "window-state:default"]
+  "permissions": ["core:default", "window-state:default", "dialog:default", "fs:default", "fs:allow-read-file"]
 }
