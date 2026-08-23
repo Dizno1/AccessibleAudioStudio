@@ -115,6 +115,7 @@ function cacheElements() {
     openAudioInput: document.getElementById("open-audio-input"),
     newAudioButton: document.getElementById("new-audio-button"),
     openStatus: document.getElementById("editor-open-status"),
+    openAudioDiagnostics: document.getElementById("open-audio-diagnostics"),
 
     documentArea: document.getElementById("editor-document-area"),
     documentSelect: document.getElementById("document-select"),
@@ -245,14 +246,47 @@ async function openAudioViaTauriDialog() {
         { name: "All Files", extensions: ["*"] },
       ],
     });
-    if (!selected) return; // user cancelled the dialog
 
-    const paths = Array.isArray(selected) ? selected : [selected];
-    const files = await Promise.all(paths.map(readTauriPathAsFile));
-    await processOpenedFiles(files);
+    // Do not assume the shape of the result: it is null when the user
+    // cancels, a single string when only one file is picked (this can
+    // happen even with multiple:true, depending on the platform), or an
+    // array of strings for a genuine multi-file selection. Normalize to
+    // one array before anything else touches it.
+    const nativePaths = normalizeDialogResult(selected);
+    if (nativePaths.length === 0) return; // cancelled
+
+    // Read every selected path independently — Promise.allSettled, not
+    // Promise.all, so one file failing to read can never silently drop
+    // the rest of the selection (a single rejected promise inside
+    // Promise.all aborts the whole batch and every other file with it).
+    const settled = await Promise.allSettled(nativePaths.map(readTauriPathAsFile));
+    const files = [];
+    let readFailedCount = 0;
+    settled.forEach((result) => {
+      if (result.status === "fulfilled") files.push(result.value);
+      else readFailedCount += 1;
+    });
+
+    await processOpenedFiles(files, {
+      pathway: "tauri-dialog",
+      nativeDialogCount: nativePaths.length,
+      readFailedCount,
+    });
   } catch (err) {
     announceAlert("Could not open the file dialog. " + (err && err.message ? err.message : ""));
   }
+}
+
+/**
+ * Normalize whatever the Tauri dialog's open() call returns into a plain
+ * array of path strings, handling every documented case explicitly rather
+ * than assuming one shape: null/undefined (cancelled), a single string
+ * (one file picked), or an array of strings (multiple files picked).
+ */
+function normalizeDialogResult(selected) {
+  if (selected == null) return [];
+  if (Array.isArray(selected)) return selected;
+  return [selected];
 }
 
 /**
@@ -277,7 +311,7 @@ async function readTauriPathAsFile(path) {
 async function handleOpenAudioInputChange() {
   const files = el.openAudioInput.files;
   if (!files || files.length === 0) return;
-  await processOpenedFiles(Array.from(files));
+  await processOpenedFiles(Array.from(files), { pathway: "browser-input", nativeDialogCount: null, readFailedCount: 0 });
   el.openAudioInput.value = ""; // allow selecting the same file again later
 }
 
@@ -286,9 +320,13 @@ async function handleOpenAudioInputChange() {
  * Opens every new file, and for any file that matches a document already
  * open, asks once (not per file) whether to open another copy — see
  * confirmReopenDuplicates. Ends with exactly one completion announcement
- * covering the whole operation.
+ * covering the whole operation, and records the full pipeline stage
+ * counts to the on-demand Open Audio Diagnostics panel (never announced —
+ * see updateOpenAudioDiagnostics).
  */
-async function processOpenedFiles(fileArray) {
+async function processOpenedFiles(fileArray, meta) {
+  const jsReceivedCount = fileArray.length;
+
   const first = await docs.openFiles(fileArray);
   let opened = first.opened;
   let failed = first.failed;
@@ -306,6 +344,21 @@ async function processOpenedFiles(fileArray) {
       declinedCount = first.alreadyOpen.length;
     }
   }
+
+  updateOpenAudioDiagnostics({
+    pathway: meta.pathway,
+    nativeDialogCount: meta.nativeDialogCount,
+    jsReceivedCount,
+    readFailedCount: meta.readFailedCount,
+    supportedCount: opened.length + failed.length + first.alreadyOpen.length,
+    decodedCount: opened.length,
+    failedDecodeCount: failed.length,
+    skippedUnsupportedCount: skipped.length,
+    alreadyOpenCount: first.alreadyOpen.length,
+    reopenedCount,
+    declinedCount,
+    openedCount: opened.length,
+  });
 
   announceStatus(
     buildOpenSummary({
@@ -748,13 +801,22 @@ function render() {
       : `${count} audio document${count === 1 ? "" : "s"} open.`;
 
   renderDocumentOptions();
-  const active = docs.getActiveDocument();
-  window.document.title = active ? active.title : "Audio Recording - AccessibleAudioStudio";
 
   updatePositionDisplay();
   updateSelectionDisplay();
-  updateButtonStates(active);
+  updateButtonStates(docs.getActiveDocument());
 }
+
+// The page's title is the app's one authoritative "which document/app is
+// this" signal for a screen reader (and the OS window/taskbar title in the
+// desktop build) — it must always say "AccessibleAudioStudio Pro" or a
+// specific document's own Pro-branded title, never the free edition's
+// title. This is the single place that sets document.title, specifically
+// so there's only one string to keep correct instead of several that can
+// drift out of sync with each other (as happened before: the static
+// <title> in index.html was corrected for 0.1.2, but this fallback string
+// was not, and silently overwrote it on the very first render).
+const DEFAULT_DOCUMENT_TITLE = "Audio Recording - AccessibleAudioStudio Pro";
 
 function renderDocumentOptions() {
   const active = docs.getActiveDocument();
@@ -766,7 +828,7 @@ function renderDocumentOptions() {
     el.documentSelect.appendChild(option);
   });
   if (active) el.documentSelect.value = active.id;
-  window.document.title = active ? active.title : "Audio Recording - AccessibleAudioStudio";
+  window.document.title = active ? active.title : DEFAULT_DOCUMENT_TITLE;
 }
 
 function updatePositionDisplay() {
@@ -830,4 +892,45 @@ function focusElement(target) {
   target.focus();
 }
 
+// ---------------------------------------------------------------------
+// Open Audio Diagnostics
+// ---------------------------------------------------------------------
+// An on-demand, collapsed panel (mirrors the existing Keyboard Shortcut
+// Diagnostics pattern in main.js) reporting exactly where files are lost
+// between "the user selected N files in the native dialog" and "N
+// documents opened" — for diagnosing a report like "I selected 15 files
+// and only 1 opened" without guessing which stage is actually at fault.
+// This is deliberately NOT announced automatically; it only updates
+// visible text, exactly like the shortcut diagnostics panel, so it never
+// adds unsolicited screen reader speech to an ordinary Open Audio.
+
+function updateOpenAudioDiagnostics(stats) {
+  if (!el.openAudioDiagnostics) return;
+
+  const nativeLine =
+    stats.pathway === "tauri-dialog"
+      ? `Native dialog returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
+      : "Native dialog: not applicable (browser file picker used).";
+
+  const readLine =
+    stats.pathway === "tauri-dialog"
+      ? `Files read from disk: ${stats.jsReceivedCount} of ${stats.nativeDialogCount} (${stats.readFailedCount} failed to read).`
+      : `Files read from disk: ${stats.jsReceivedCount} (browser file picker already provides file data directly).`;
+
+  el.openAudioDiagnostics.textContent = [
+    `Last Open Audio operation, ${new Date().toLocaleTimeString()}:`,
+    nativeLine,
+    `JavaScript received: ${stats.jsReceivedCount} file${stats.jsReceivedCount === 1 ? "" : "s"}.`,
+    readLine,
+    `Supported audio files: ${stats.supportedCount}.`,
+    `Files decoded: ${stats.decodedCount}${stats.failedDecodeCount ? ` (${stats.failedDecodeCount} failed to decode)` : ""}.`,
+    `Unsupported files skipped: ${stats.skippedUnsupportedCount}.`,
+    stats.alreadyOpenCount > 0
+      ? `Already-open files found: ${stats.alreadyOpenCount} (${stats.reopenedCount} reopened as a copy, ${stats.declinedCount} declined).`
+      : null,
+    `Documents opened: ${stats.openedCount}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 

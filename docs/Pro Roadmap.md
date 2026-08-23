@@ -328,14 +328,98 @@ three skip links are present with working `href` targets. **Not
 verified:** a real screen reader pass over any of this — per the
 directive, that happens after this build is returned, not before.
 
+## 0.1.3 — instrumentation, a real title bug fix, and honest open questions
+
+Real Windows testing of 0.1.2 found the multi-file Open Audio problem
+**still present** — the native dialog rewrite in 0.1.2 was a real, correct
+architectural fix (confirmed: the file-type filter dialog in that test
+session was genuinely the native Windows picker, and it did filter to
+`*.wav;*.mp3;*.m4a;*.flac;*.ogg` as configured), but the end result was
+still "1 audio file opened." after a 15-file selection. Per the
+correction directive for this build, the response here is instrumentation
+and one confirmed root-cause fix — not another round of guessing.
+
+### One real, confirmed bug found and fixed: the document/window title
+
+JAWS announced the title as "Audio Recording - AccessibleAudioStudio —
+Web content" with no "Pro" — even though the H1 correctly said Pro. This
+was traceable, not speculative: `index.html`'s static `<title>` tag *was*
+correctly changed to include "Pro" in 0.1.2, but
+`app/js/audioEditorController.js`'s `render()` function overwrites
+`document.title` on every render (including the very first one, at
+startup, before any document is open) with a fallback string that was
+never updated to match — `"Audio Recording - AccessibleAudioStudio"`,
+missing "Pro". That stale fallback silently overwrote the correct static
+title the moment the page finished loading, which is exactly the observed
+symptom. Fixed by correcting the fallback string (now a single named
+constant, `DEFAULT_DOCUMENT_TITLE`, so there's one place to keep this
+right instead of two copies that can drift again) and removing the
+now-redundant duplicate assignment that existed in both `render()` and
+`renderDocumentOptions()`.
+
+### Multi-file Open: instrumented, hardened, not re-guessed
+
+Two concrete, non-speculative changes, plus the diagnostic reporting the
+correction directive asked for instead of another blind fix:
+
+- **The Tauri dialog's return value is now explicitly normalized** for
+  all three documented cases (`null` when cancelled, a single string, or
+  an array of strings) via a named `normalizeDialogResult()` function,
+  rather than the previous inline ternary. Checked against Tauri's own
+  published type signature (`OpenDialogReturn<T>`, `multiple: true` →
+  `string[] | null`) — the shape assumption was already correct, but it's
+  now explicit and named rather than implicit.
+- **Reading the selected files is no longer fail-fast.** The previous
+  code used `Promise.all()` to read every selected path via the fs
+  plugin — if even one file failed to read, the *entire* batch would
+  reject and none of the 15 files would open, which would produce a
+  different symptom (an error alert) than what was actually observed, but
+  was still a real reliability gap worth closing regardless of whether it
+  explains this specific report. Switched to `Promise.allSettled()`, so
+  every successfully-read file still opens even if others fail, and
+  failures are counted rather than aborting the batch.
+- **A new "Open Audio Diagnostics" panel** (collapsed `<details>` in the
+  footer, matching the existing Keyboard Shortcut Diagnostics pattern —
+  see `index.html` and `updateOpenAudioDiagnostics()` in
+  `audioEditorController.js`) reports, after every Open Audio operation,
+  on demand and never auto-announced:
+  - Native dialog returned: N files (or "not applicable" for the browser
+    fallback path)
+  - Files read from disk: N (with a failure count if any)
+  - JavaScript received: N files
+  - Supported audio files: N
+  - Files decoded: N (with a failure count if any)
+  - Unsupported files skipped: N
+  - Already-open files found / reopened / declined, when relevant
+  - Documents opened: N
+
+  This directly answers "where exactly do files 2 through 15 fall
+  through the floor" on the next real test, instead of another delivery
+  that claims a fix without proof.
+
+**What this does and does not claim:** the title fix is confirmed correct
+by direct code inspection — the bug and the fix are both traceable to an
+exact line. The multi-file dialog-result handling is more defensive and
+more correct than before, and the diagnostics will make the actual
+failure point visible on the next real run — but **this environment still
+has no Rust toolchain and cannot build or run the Tauri desktop app**, so
+whether the native dialog itself returns all 15 paths on real Windows
+remains unconfirmed here. That is explicitly the open question 0.1.3
+exists to answer, not something this build claims to have resolved.
+
 ## Recommended next phase
 
-Build 0.1.2 via GitHub Actions and confirm on real Windows: the native
-dialog actually opens multiple files in one operation (the thing 0.1.1's
-unit tests couldn't prove), the duplicate-file confirmation reads
-correctly with a real screen reader, and the reduced landmark structure,
-skip links, footer, and branding hold up under JAWS/NVDA/Narrator. After
-that: a fair trial of the current document-switching combo box now that
-multi-file opening should actually work, then markers (Phase 6), since
-several editing operations here (set selection start/end, navigate by
-increment) already share the underlying mechanics markers will need.
+Build 0.1.3 via GitHub Actions and, on real Windows, select several files
+in one Open Audio operation, then open the Open Audio Diagnostics panel in
+the footer immediately after — it will report the exact count at every
+stage of the pipeline. That single result determines what happens next:
+if "Native dialog returned" is already less than the number of files
+selected, the problem is in the Tauri/Rust dialog call itself or how
+Windows is presenting the picker, not in this app's JavaScript; if it
+matches but a later stage drops, the diagnostics panel will show exactly
+which one. Confirm at the same time that the document/window title now
+correctly says "AccessibleAudioStudio Pro" from first launch. After the
+real multi-file count is confirmed working: a fair trial of the current
+document-switching combo box, then markers (Phase 6), since several
+editing operations here (set selection start/end, navigate by increment)
+already share the underlying mechanics markers will need.
