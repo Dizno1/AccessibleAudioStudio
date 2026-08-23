@@ -23,6 +23,21 @@ A user can currently:
 
 See `docs/Roadmap.md` for the complete list of what was built, known limitations, and the recommended next phase.
 
+## AccessibleAudioStudio Pro: Audio Editor (new)
+
+A new "Audio Editor (Pro)" panel adds file-based audio editing alongside
+the recording workflow above, without changing it. A user can currently:
+
+- Open one or several existing audio files at once (WAV, MP3, M4A, FLAC, OGG — mixed formats in a single Open operation), or create a New Audio document
+- Work with multiple open audio documents at once, each with its own accessible title
+- Navigate precisely by 10 seconds, 1 second, or 100 milliseconds, with position and selection always spoken in natural language ("1 minute 14.250 seconds")
+- Set a selection, preview it, and hear its start/end/duration on demand
+- Cut, Copy, Paste, Delete, Trim to Selection, Select All, Undo, and Redo — including copying audio between two different open documents
+- Have routine format differences (sample rate, mono/stereo) reconciled automatically on paste
+- Save or Save As to an ordinary WAV or MP3 file
+
+See `docs/Pro Roadmap.md` for exactly what's implemented vs. deferred against the full 12-phase Pro roadmap, and `docs/Audio Editing (Pro).md` for how it behaves for a keyboard and screen reader user, including known limitations.
+
 ## Running the app
 
 This is a static, dependency-free browser application — no build step, no server required.
@@ -53,11 +68,21 @@ app/js/
   shortcutService.js       Centralized global keyboard shortcut service
   shortcutDiagnostics.js   Tracks the last shortcut detected, for the Diagnostics panel
   announcer.js             ARIA live region status/alert announcements
-  timeFormat.js             Natural-language duration/date formatting
+  timeFormat.js             Natural-language duration/date/precise-time formatting
+  audioEditorController.js Audio Editor (Pro): DOM wiring for open/new/save, navigation, selection, editing
+  documentManager.js       Audio Editor (Pro): the set of open audio documents
+  audioDocument.js         Audio Editor (Pro): one open document's state, selection, and undo/redo history
+  audioBufferUtils.js      Audio Editor (Pro): pure AudioBuffer editing operations + format reconciliation
+  audioBufferPlayer.js     Audio Editor (Pro): Web Audio playback of a document or a selection range
+  audioClipboard.js        Audio Editor (Pro): in-application clipboard for Cut/Copy/Paste
+  audioCodec.js            Audio Editor (Pro): decode any supported file; encode WAV/MP3
+  vendor/lame.min.js       Audio Editor (Pro): vendored pure-JS MP3 encoder (see vendor/README.md)
 docs/
   Vision.md
   Screen Reader First Principles.md
   Recording Profiles.md
+  Pro Roadmap.md
+  Audio Editing (Pro).md
   Roadmap.md
 src-tauri/                 Windows desktop packaging (Tauri) -- see "Building the Windows Application"
   Cargo.toml               Rust package manifest

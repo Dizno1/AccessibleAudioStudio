@@ -29,6 +29,31 @@ export function formatDurationNatural(totalSeconds) {
 }
 
 /**
+ * Convert a fractional number of seconds into a natural-language, precise
+ * time position, for the audio editor's nonvisual navigation. Precision is
+ * kept to whole milliseconds (three decimal places) since that is what
+ * sample-accurate editing needs, and it is spoken as part of the seconds
+ * value rather than as a separate digit group, which is what keeps it
+ * readable by a screen reader:
+ *   1.5       -> "1.500 seconds"
+ *   74.25     -> "1 minute 14.250 seconds"
+ *   3661.005  -> "1 hour 1 minute 1.005 seconds"
+ */
+export function formatTimePrecise(totalSeconds) {
+  const total = Math.max(0, totalSeconds || 0);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total - hours * 3600 - minutes * 60;
+
+  const parts = [];
+  if (hours > 0) parts.push(`${hours} ${hours === 1 ? "hour" : "hours"}`);
+  if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+  parts.push(`${secs.toFixed(3)} ${Math.abs(secs - 1) < 0.0005 ? "second" : "seconds"}`);
+
+  return parts.join(" ");
+}
+
+/**
  * Format a creation date/time in natural, readable language.
  */
 export function formatDateNatural(isoString) {

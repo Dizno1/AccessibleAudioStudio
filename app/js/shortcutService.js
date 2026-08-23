@@ -44,6 +44,65 @@ export const SHORTCUTS = [
     label: "Ctrl+Alt+P",
     description: "Play or Pause the selected recording",
   },
+
+  // Audio Editor (Pro) — ordinary Windows document/editing conventions,
+  // per the Pro roadmap's Keyboard Philosophy: reuse familiar shortcuts
+  // rather than inventing new ones. Every one of these also has a plain
+  // button in the Audio Editor panel.
+  {
+    action: "openAudio",
+    combo: { ctrl: true, key: "o" },
+    label: "Ctrl+O",
+    description: "Open Audio",
+  },
+  {
+    action: "newAudio",
+    combo: { ctrl: true, key: "n" },
+    label: "Ctrl+N",
+    description: "New Audio",
+  },
+  {
+    action: "saveAudio",
+    combo: { ctrl: true, key: "s" },
+    label: "Ctrl+S",
+    description: "Save",
+  },
+  {
+    action: "saveAudioAs",
+    combo: { ctrl: true, shift: true, key: "s" },
+    label: "Ctrl+Shift+S",
+    description: "Save As",
+  },
+  {
+    action: "copySelection",
+    combo: { ctrl: true, key: "c" },
+    label: "Ctrl+C",
+    description: "Copy",
+  },
+  {
+    action: "cutSelection",
+    combo: { ctrl: true, key: "x" },
+    label: "Ctrl+X",
+    description: "Cut",
+  },
+  {
+    action: "pasteSelection",
+    combo: { ctrl: true, key: "v" },
+    label: "Ctrl+V",
+    description: "Paste",
+  },
+  {
+    action: "undoEdit",
+    combo: { ctrl: true, key: "z" },
+    label: "Ctrl+Z",
+    description: "Undo",
+  },
+  {
+    action: "redoEdit",
+    combo: { ctrl: true, key: "y" },
+    label: "Ctrl+Y",
+    description: "Redo",
+  },
 ];
 
 // Reserved for future phases. Intentionally NOT wired to any key combo yet;

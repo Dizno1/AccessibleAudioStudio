@@ -1,5 +1,11 @@
 # Roadmap
 
+**This file covers the free AccessibleAudioStudio only — recording,
+playback, and the Recording Library. It is unchanged and still
+feature-complete as described below.** For AccessibleAudioStudio Pro (the
+new Audio Editor: opening/editing/combining audio files), see
+`docs/Pro Roadmap.md` and `docs/Audio Editing (Pro).md`.
+
 ## Status: Phase 1 (web) complete, plus two accessibility refinement passes; Phase 2 (Windows packaging) configured, not yet built
 
 Phase 1 delivers a dependable, fully keyboard- and screen-reader-accessible recording foundation and is considered feature-complete for Version 1.0. Two follow-up refinement passes (below) corrected a real keyboard-shortcut bug, substantially reduced how much the application speaks automatically, and eliminated focus/DOM instability that was causing extra screen-reader chatter beyond the application's own announcements. Phase 2 packages this same, unmodified application as a native Windows desktop app.
