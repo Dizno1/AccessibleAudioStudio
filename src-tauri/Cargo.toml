@@ -1,15 +1,23 @@
 [package]
-name = "accessibleaudiostudio"
-version = "1.0.0"
-description = "Professional audio recording designed from the ground up for keyboard and screen reader users."
+name = "accessibleaudiostudio-pro"
+version = "0.1.0"
+description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
 rust-version = "1.77"
 
 # See https://tauri.app/v1/api/config/ / https://v2.tauri.app for reference.
-# This crate only hosts the existing browser-based AccessibleAudioStudio (see
-# ../index.html and ../app/) inside a native Windows window. It intentionally
+# This crate hosts the AccessibleAudioStudio Pro web app (see ../index.html
+# and ../app/, which now include the Audio Editor alongside the original
+# recording workflow) inside a native Windows window. It intentionally
 # contains no application logic of its own — the HTML/CSS/JS is unmodified.
+#
+# Identity is deliberately separate from the free AccessibleAudioStudio
+# (different package/bin name, Tauri identifier, and version — see
+# ../src-tauri/tauri.conf.json and ../README.md, "Application identity") so
+# the two can be installed side by side on the same Windows machine without
+# Windows treating a Pro test build as an upgrade of, or collision with, the
+# published free edition.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -21,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [[bin]]
-name = "accessibleaudiostudio"
+name = "accessibleaudiostudio-pro"
 path = "src/main.rs"
 
 [profile.release]

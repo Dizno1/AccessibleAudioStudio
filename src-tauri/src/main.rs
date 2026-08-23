@@ -12,5 +12,5 @@ fn main() {
         // plugin, no custom persistence code needed.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .run(tauri::generate_context!())
-        .expect("error while running AccessibleAudioStudio");
+        .expect("error while running AccessibleAudioStudio Pro");
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the AccessibleAudioStudio main window. The app itself calls no Tauri commands — microphone access, recording, playback, and storage are all standard web APIs (getUserMedia, MediaRecorder, IndexedDB) handled by the WebView2 runtime, not by Tauri IPC. Only the window-state plugin needs an explicit permission here.",
+  "description": "Capabilities for the AccessibleAudioStudio Pro main window. The app itself calls no Tauri commands — microphone access, recording, playback, and storage are all standard web APIs (getUserMedia, MediaRecorder, IndexedDB) handled by the WebView2 runtime, not by Tauri IPC. Only the window-state plugin needs an explicit permission here.",
   "windows": ["main"],
   "permissions": ["core:default", "window-state:default"]
 }

@@ -1,8 +1,8 @@
 {
-  "name": "accessibleaudiostudio",
-  "version": "1.0.0",
+  "name": "accessibleaudiostudio-pro",
+  "version": "0.1.0",
   "private": true,
-  "description": "Professional audio recording designed from the ground up for keyboard and screen reader users.",
+  "description": "Professional audio recording and editing designed from the ground up for keyboard and screen reader users.",
   "scripts": {
     "tauri": "tauri",
     "prepare:dist": "node scripts/prepare-dist.js",

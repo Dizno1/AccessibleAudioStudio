@@ -131,7 +131,7 @@ AccessibleAudioStudio's browser-based application (`index.html` and `app/`) is p
 
 `.github/workflows/build-windows.yml` builds the real installers on a genuine Windows machine (a GitHub-hosted `windows-latest` runner) automatically:
 
-- **Push a version tag** (e.g. `git tag v1.0.0 && git push origin v1.0.0`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
+- **Push a Pro version tag** (e.g. `git tag pro-v0.1.0 && git push origin pro-v0.1.0`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
 - **Or run it manually** from the Actions tab ("Build Windows Installer" > "Run workflow") to just build and download the installers as workflow artifacts, without creating a release -- useful while testing a change.
 
 This is a real build on a real Windows machine every time -- not a simulation. See `Release/README.md` for the full step-by-step.
@@ -204,33 +204,64 @@ The first build will take several minutes (Rust compiles the whole dependency tr
 
 ### Application identity
 
-These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`; update both together if any of these change:
+**AccessibleAudioStudio Pro is a separate Windows application from the free
+AccessibleAudioStudio, on purpose, so both can be installed on the same
+machine at once.** Pro's Tauri identifier, product name, and window title
+are all distinct from the free edition's — Windows sees them as two
+unrelated applications, not two versions of the same one, so installing
+Pro will never upgrade, repair, replace, or uninstall the free edition (or
+vice versa).
 
-| Field | Value |
-|---|---|
-| Application name | AccessibleAudioStudio |
-| Publisher | Open Door Design |
-| Version | 1.0.0 |
-| Description | Professional audio recording designed from the ground up for keyboard and screen reader users. |
+These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`; update all of them together if any change:
+
+| Field | AccessibleAudioStudio (free) | AccessibleAudioStudio Pro |
+|---|---|---|
+| Application name | AccessibleAudioStudio | AccessibleAudioStudio Pro |
+| Publisher | Open Door Design | Open Door Design |
+| Tauri identifier | `org.opendoordesign.accessibleaudiostudio` | `org.opendoordesign.accessibleaudiostudio.pro` |
+| Cargo/package name | `accessibleaudiostudio` | `accessibleaudiostudio-pro` |
+| Window title | AccessibleAudioStudio | AccessibleAudioStudio Pro |
+| Version | 1.0.0 | 0.1.0 (current test build — see "Pro version numbering" below) |
+
+#### Pro version numbering
+
+Every Windows test build of Pro increments the version — it is never
+rebuilt under the same version number as a previous test build. This is
+the same practice already used for AccessibleScreenCapture, and for the
+same reason: it lets a bug report like "this happened in 0.1.3 but not
+0.1.2" point at an exact, reproducible build.
+
+- `0.1.0` — initial Pro editor (Open/New Audio, navigation, selection, editing, Save/Save As)
+- `0.1.1`, `0.1.2`, … — subsequent test/fix builds
+- `0.2.0` — a meaningful new feature milestone (e.g. markers)
+- eventually `1.0.0` — first production Pro release
+
+The version must always be updated in the same three places together —
+`src-tauri/tauri.conf.json` (`version`), `src-tauri/Cargo.toml`
+(`[package] version`), and `package.json` (`version`) — so the number
+shown by Windows, the compiled binary, and the npm scripts never drift
+apart. The generated installer filenames always include whichever version
+is currently set (see "GitHub Releases" below), so there's no separate
+place to remember to update.
 
 ### What the packaging preserves
 
-- **Window:** titled "AccessibleAudioStudio," 1000×800 default, resizable, 700×500 minimum, centered on first launch. Size and position from the previous session are restored automatically on later launches (via `tauri-plugin-window-state`), and saved again as the window is moved, resized, or closed.
+- **Window:** titled "AccessibleAudioStudio Pro," 1000×800 default, resizable, 700×500 minimum, centered on first launch. Size and position from the previous session are restored automatically on later launches (via `tauri-plugin-window-state`), and saved again as the window is moved, resized, or closed.
 - **No browser chrome:** Tauri windows never have tabs, an address bar, or browser menus -- there's no browser present to have any, unlike wrapping the app in an actual browser window. Devtools are available in development builds for troubleshooting and automatically stripped from release builds.
 - **Microphone access, keyboard shortcuts, and screen reader accessibility:** all provided by WebView2 running the exact same `index.html`/`app/` as the browser version, so this behavior doesn't need to be (and wasn't) reimplemented.
-- **Installer behavior:** both the `.msi` and the `.exe` (NSIS) create Start Menu shortcuts and register the app with Windows so it appears in, and can be removed from, Settings > Apps, the standard uninstall path. A desktop shortcut is offered as an option during NSIS setup.
+- **Installer behavior:** both the `.msi` and the `.exe` (NSIS) create Start Menu shortcuts and register the app with Windows so it appears in, and can be removed from, Settings > Apps, the standard uninstall path -- as **"AccessibleAudioStudio Pro,"** distinct from the free edition's own Start Menu and Settings entry. A desktop shortcut is offered as an option during NSIS setup.
 
 ## GitHub Releases
 
-Pushing a version tag (`git tag v1.0.0 && git push origin v1.0.0`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. What's left to do by hand:
+Pushing a Pro version tag (`git tag pro-v0.1.0 && git push origin pro-v0.1.0`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
 
 1. After the workflow finishes, open the draft release on GitHub (Releases tab).
-2. Confirm the title is clear, e.g. "AccessibleAudioStudio 1.0.0 (Windows)," and adjust if needed.
-3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing.
-4. Write release notes covering what's new or changed since the last release, any known issues, and which Windows versions were tested.
+2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.0 (Windows)," and adjust if needed.
+3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing. If the free AccessibleAudioStudio is also installed on that machine, confirm both apps still work independently afterward.
+4. Write release notes covering what's new or changed since the last Pro build, any known issues, and which Windows versions were tested.
 5. Publish the release. Keep every previous release's assets attached to its own tagged release rather than overwriting them, so there's a complete version history to link back to or roll back to if needed.
-6. The published release's asset URLs (e.g. `.../releases/download/v1.0.0/AccessibleAudioStudio_1.0.0_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
+6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.0/AccessibleAudioStudio Pro_0.1.0_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
 
 ## Recommended next phase
 
-Immediately: push this repository to GitHub and push a version tag (or run the workflow manually) to produce the actual installers via `.github/workflows/build-windows.yml` -- this hasn't been done yet (see `Release/README.md`), and it's the only way real installer files come into existence. Test the result on a real Windows machine with a screen reader before publishing. After that, the next feature phase is editing foundations (trimming and markers), built non-destructively on top of the original recording. See `docs/Roadmap.md` for details.
+Build and install the corrected Pro 0.1.0 identity on a real Windows machine (ideally one that also has the free AccessibleAudioStudio installed) and confirm the two coexist cleanly: both appear as separate Start Menu entries and separate Settings > Apps entries, installing/uninstalling one doesn't touch the other, and each launches its own correctly-titled window. Then proceed with real screen reader testing (JAWS/NVDA/Narrator) of the Audio Editor (Pro) panel itself -- see `docs/Pro Roadmap.md` and `docs/Audio Editing (Pro).md`.

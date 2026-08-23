@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AccessibleAudioStudio",
-  "version": "1.0.0",
-  "identifier": "org.opendoordesign.accessibleaudiostudio",
+  "productName": "AccessibleAudioStudio Pro",
+  "version": "0.1.0",
+  "identifier": "org.opendoordesign.accessibleaudiostudio.pro",
   "build": {
     "frontendDist": "../dist",
     "devUrl": null,
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AccessibleAudioStudio",
+        "title": "AccessibleAudioStudio Pro",
         "width": 1000,
         "height": 800,
         "minWidth": 700,
@@ -39,8 +39,8 @@
     ],
     "publisher": "Open Door Design",
     "copyright": "Open Door Design",
-    "shortDescription": "Professional audio recording for keyboard and screen reader users.",
-    "longDescription": "AccessibleAudioStudio is a professional audio recording environment designed from the ground up for keyboard users and screen reader users, and fully usable by everyone.",
+    "shortDescription": "Professional audio recording and editing for keyboard and screen reader users.",
+    "longDescription": "AccessibleAudioStudio Pro is a professional audio recording and editing environment designed from the ground up for keyboard users and screen reader users, and fully usable by everyone. It installs alongside the free AccessibleAudioStudio rather than replacing it.",
     "windows": {
       "wix": {
         "language": "en-US"

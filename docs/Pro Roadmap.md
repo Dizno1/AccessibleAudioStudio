@@ -82,6 +82,45 @@ No feature above is marked Completed unless it was actually implemented and
 exercised — architecture existing for something is not treated as the
 feature being done.
 
+## Fixed — Windows desktop identity collided with the free edition
+
+The first real Windows build of this repository succeeded, but it inherited
+the free AccessibleAudioStudio's exact desktop identity (product name
+`AccessibleAudioStudio`, version `1.0.0`, Tauri identifier
+`org.opendoordesign.accessibleaudiostudio`, window title
+`AccessibleAudioStudio`) unchanged, because adding the Audio Editor never
+touched `src-tauri/`. Depending on installer behavior, installing that build
+risked Windows treating it as an upgrade of, repair of, or replacement for
+an existing free AccessibleAudioStudio installation, rather than a separate
+application — so it was not installed.
+
+Fixed by giving AccessibleAudioStudio Pro its own permanent desktop
+identity, separate from the free edition, starting at its own version:
+
+| Field | Free AccessibleAudioStudio | AccessibleAudioStudio Pro |
+|---|---|---|
+| Product name | AccessibleAudioStudio | AccessibleAudioStudio Pro |
+| Tauri identifier | `org.opendoordesign.accessibleaudiostudio` | `org.opendoordesign.accessibleaudiostudio.pro` |
+| Cargo/package name | `accessibleaudiostudio` | `accessibleaudiostudio-pro` |
+| Window title | AccessibleAudioStudio | AccessibleAudioStudio Pro |
+| Version | 1.0.0 | 0.1.0 (first Pro test build) |
+
+Updated consistently across `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
+`src-tauri/capabilities/default.json`, `src-tauri/src/main.rs`, `package.json`,
+`.github/workflows/build-windows.yml` (release naming, artifact label, and
+tag trigger pattern — `pro-v*` alongside the existing `v*`, so a Pro tag like
+`pro-v0.1.0` can never collide with a free-edition tag like `v1.0.0`), and
+both `README.md` and `Release/README.md`. See `README.md`, "Application
+identity" and "Pro version numbering," for the ongoing process: every
+subsequent Windows test build gets its own incremented version, kept in sync
+across `tauri.conf.json`, `Cargo.toml`, and `package.json` together, the same
+practice already used for AccessibleScreenCapture.
+
+Not yet done: this corrected identity has not yet been built or installed on
+a real Windows machine. That's the recommended next action, ideally on a
+machine that also has the free AccessibleAudioStudio installed, to directly
+confirm the two coexist without collision before any further Pro testing.
+
 ## Recommended next phase
 
 Real screen reader testing (JAWS, NVDA, Narrator at minimum) of everything
