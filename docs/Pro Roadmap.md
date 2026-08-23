@@ -121,6 +121,56 @@ a real Windows machine. That's the recommended next action, ideally on a
 machine that also has the free AccessibleAudioStudio installed, to directly
 confirm the two coexist without collision before any further Pro testing.
 
+## Fixed — Open Audio only opened one file from a multi-file selection (0.1.0 → 0.1.1)
+
+Real screen reader testing of 0.1.0 found that selecting many files at once
+in the Windows Open dialog (Ctrl+A across 15 files in a folder) and pressing
+Open resulted in only one audio document being opened, with no error shown
+for the other 14.
+
+**Root cause:** every selected file, regardless of extension, was handed
+straight to the browser's `decodeAudioData()` with no filtering. The Open
+dialog's file selection itself worked correctly (`<input type="file"
+multiple>` was already in place); the problem was entirely in how the
+selected files were processed afterward. The files opened sequentially in
+one loop, and a non-audio file partway through the selection — the test
+folder included Audacity `.aup3` project files, which are not audio and
+were never meant to be opened — could stall on `decodeAudioData()` without
+a clean, fast rejection, which halted the rest of the batch silently rather
+than skipping that one file and continuing.
+
+**Fixed** in `app/js/audioCodec.js` and `app/js/documentManager.js`:
+
+- Every selected file's extension is checked against an explicit
+  supported-format allow-list (WAV, MP3, M4A, FLAC, OGG) **before** it is
+  ever handed to the decoder. A file with any other extension — `.aup3`
+  included — is sorted straight into a "skipped, unsupported" outcome and
+  never touches `decodeAudioData()` at all.
+- As a backstop for a file that does have a supported extension but is
+  corrupt or otherwise pathological, decoding is now bounded by a 20-second
+  timeout per file, so a single bad file can no longer stall the rest of a
+  multi-file Open operation indefinitely.
+- Every file in a selection is now sorted into exactly one of three
+  outcomes — opened, skipped (unsupported), or failed (supported extension,
+  decode error) — and the whole batch is reported in one single, concise
+  announcement, e.g. `10 audio files opened. 5 unsupported files skipped.`
+  This replaced per-file error announcements for failed files, which were
+  never appropriate here per the roadmap's "do not announce every
+  individual file" rule and are now folded into that same one-sentence
+  summary instead.
+
+Verified against a simulated 15-file selection matching the real test case
+(10 valid files across all five supported formats, 1 corrupt-but-supported
+file, 4 `.aup3` files) using mocked decode/AudioContext behavior: all 10
+valid files opened as independent documents, the 4 `.aup3` files were
+skipped without ever reaching the decoder, and the 1 corrupt file was
+reported as failed — matching the required behavior exactly.
+
+**Not changed, deliberately:** the "Open audio documents" combo box and the
+document-switching model are untouched, so this fix can be evaluated with
+several documents genuinely open at once before any decision about an
+Audacity-style separate-window model.
+
 ## Recommended next phase
 
 Real screen reader testing (JAWS, NVDA, Narrator at minimum) of everything

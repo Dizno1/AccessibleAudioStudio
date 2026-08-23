@@ -209,21 +209,46 @@ async function handleOpenAudioInputChange() {
   const files = el.openAudioInput.files;
   if (!files || files.length === 0) return;
 
-  const { opened, failed } = await docs.openFiles(files);
+  const { opened, failed, skipped } = await docs.openFiles(files);
   el.openAudioInput.value = ""; // allow selecting the same file again later
 
-  if (opened.length > 0) {
-    const label = opened.length === 1 ? "Audio opened." : `${opened.length} audio files opened.`;
-    announceStatus(label);
-  }
-  failed.forEach(({ file, error }) => {
-    announceAlert(
-      `Could not open "${file.name}". ${describeDecodeError(error)} You can try a different file, or a converted copy of this one.`
-    );
-  });
+  // One concise announcement for the entire selection, never one per file
+  // — whether that selection was 1 file or 15.
+  announceStatus(buildOpenSummary(opened.length, skipped.length, failed.length));
 
   render();
-  if (opened.length > 0) focusElement(el.documentSelect);
+  if (opened.length > 0) {
+    focusElement(el.documentSelect);
+  } else {
+    focusElement(el.openStatus);
+  }
+}
+
+/**
+ * Build the single completion announcement for an Open Audio operation,
+ * e.g. "10 audio files opened." or "10 audio files opened. 5 unsupported
+ * files skipped."
+ */
+function buildOpenSummary(openedCount, skippedCount, failedCount) {
+  const parts = [];
+
+  parts.push(
+    openedCount === 0
+      ? "No audio files opened."
+      : openedCount === 1
+      ? "1 audio file opened."
+      : `${openedCount} audio files opened.`
+  );
+
+  if (skippedCount > 0) {
+    parts.push(skippedCount === 1 ? "1 unsupported file skipped." : `${skippedCount} unsupported files skipped.`);
+  }
+
+  if (failedCount > 0) {
+    parts.push(failedCount === 1 ? "1 file could not be opened." : `${failedCount} files could not be opened.`);
+  }
+
+  return parts.join(" ");
 }
 
 function handleNewAudio() {
@@ -679,9 +704,4 @@ function focusElement(target) {
   target.focus();
 }
 
-function describeDecodeError(err) {
-  if (err && err.name === "EncodingError") {
-    return "This file's audio format could not be decoded.";
-  }
-  return err && err.message ? err.message : "This file could not be read as audio.";
-}
+

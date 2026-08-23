@@ -1,20 +1,30 @@
 name: Build Windows Installer
 
-# Builds AccessibleAudioStudio's actual .msi and .exe on a real, GitHub-hosted
-# Windows machine (windows-latest) — not a simulation, not a placeholder. This
-# exists because producing a genuine Windows installer requires Windows itself;
-# it cannot be done inside a Linux development sandbox.
+# Builds AccessibleAudioStudio Pro's actual .msi and .exe on a real,
+# GitHub-hosted Windows machine (windows-latest) — not a simulation, not a
+# placeholder. This exists because producing a genuine Windows installer
+# requires Windows itself; it cannot be done inside a Linux development
+# sandbox.
 #
-# Push a tag like "v1.0.0" to build the installers AND publish them as a draft
-# GitHub Release automatically (see README.md, "GitHub Releases"). Or run this
-# workflow manually (Actions tab > Build Windows Installer > Run workflow) to
-# just build and download the installers as workflow artifacts, without
-# creating a release — useful for testing a change before tagging.
+# This builds the Pro identity configured in src-tauri/tauri.conf.json
+# (productName "AccessibleAudioStudio Pro"; check that file for the current
+# version) — separate from the free AccessibleAudioStudio's own identity
+# and any tag history it may have in this same repository. Use a
+# Pro-specific tag matching the current version, e.g. "pro-v0.1.1", so Pro
+# version tags never collide with a free-edition tag such as "v1.0.0".
+#
+# Push a tag like "pro-v0.1.1" to build the installers AND publish them as a
+# draft GitHub Release automatically (see README.md, "GitHub Releases"). Or
+# run this workflow manually (Actions tab > Build Windows Installer > Run
+# workflow) to just build and download the installers as workflow
+# artifacts, without creating a release — useful for testing a change
+# before tagging.
 
 on:
   push:
     tags:
       - "v*"
+      - "pro-v*"
   workflow_dispatch:
 
 permissions:
@@ -45,8 +55,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "AccessibleAudioStudio ${{ github.ref_name }}"
-          releaseBody: "See docs/Roadmap.md for what's included in this release. Download the .msi (recommended) or the .exe setup file below."
+          releaseName: "AccessibleAudioStudio Pro ${{ github.ref_name }}"
+          releaseBody: "See docs/Pro Roadmap.md for what's included in this build. This is AccessibleAudioStudio Pro, which installs side by side with the free AccessibleAudioStudio rather than replacing it. Download the .msi (recommended) or the .exe setup file below."
           releaseDraft: true
           prerelease: false
 
@@ -57,7 +67,7 @@ jobs:
       - name: Upload installers as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AccessibleAudioStudio-windows-installers
+          name: AccessibleAudioStudio-Pro-windows-installers
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe

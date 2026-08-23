@@ -4,7 +4,7 @@
 // module's state and renders it.
 
 import { AudioDocument } from "./audioDocument.js";
-import { decodeAudioFile, extensionOf } from "./audioCodec.js";
+import { decodeAudioFile, extensionOf, isSupportedAudioExtension } from "./audioCodec.js";
 import { createEmptyBuffer } from "./audioBufferUtils.js";
 
 const documents = []; // open AudioDocument instances, in open order
@@ -27,17 +27,32 @@ export function setActiveDocument(id) {
 }
 
 /**
- * Open one or more audio files as new documents. Files that fail to
- * decode are reported individually rather than aborting the whole batch —
- * opening five WAVs and one corrupt MP3 should still open the five WAVs.
+ * Open one or more audio files as new documents, in a single operation.
+ * Every file is sorted into exactly one of three outcomes:
+ *   - opened: a supported audio file that decoded successfully and is now
+ *     its own audio document.
+ *   - failed: a file with a supported extension that still failed to
+ *     decode (e.g. corrupt).
+ *   - skipped: a file whose extension isn't one this app can open at all
+ *     (an Audacity .aup3 project file, for example). These are never
+ *     handed to the decoder in the first place — see
+ *     isSupportedAudioExtension in audioCodec.js — specifically so that
+ *     one unsupported file in a folder full of audio can never stall or
+ *     block the rest of the selection from opening.
  * @param {FileList|File[]} files
- * @returns {Promise<{opened: AudioDocument[], failed: {file: File, error: Error}[]}>}
+ * @returns {Promise<{opened: AudioDocument[], failed: {file: File, error: Error}[], skipped: File[]}>}
  */
 export async function openFiles(files) {
   const opened = [];
   const failed = [];
+  const skipped = [];
 
   for (const file of Array.from(files)) {
+    if (!isSupportedAudioExtension(file.name)) {
+      skipped.push(file);
+      continue;
+    }
+
     try {
       const buffer = await decodeAudioFile(file);
       const baseName = generateUniqueBaseName(file.name);
@@ -57,7 +72,7 @@ export async function openFiles(files) {
     activeId = opened[opened.length - 1].id;
   }
 
-  return { opened, failed };
+  return { opened, failed, skipped };
 }
 
 /** Create a new empty audio document. Matches the currently-active document's format if one exists, otherwise CD-quality stereo defaults. */

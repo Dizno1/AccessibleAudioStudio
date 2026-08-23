@@ -5,12 +5,14 @@
 // it will be written.
 //
 // Decoding: the browser's built-in decodeAudioData() is used for every
-// input format (WAV, MP3, M4A, FLAC, OGG). This is what lets "Open Audio"
-// accept a mix of formats in one operation without any format-specific
+// supported input format (WAV, MP3, M4A, FLAC, OGG — see
+// SUPPORTED_AUDIO_EXTENSIONS below). This is what lets "Open Audio" accept
+// a mix of those formats in one operation without any format-specific
 // code here — whatever the browser's audio engine can decode, this app
-// can open. If a particular file's format isn't supported by the engine
-// running the app, decodeAudioData rejects and the caller reports a
-// specific, accessible error (see documentManager.js).
+// can open. A file whose extension isn't on that list is never handed to
+// the decoder at all (see isSupportedAudioExtension); a file that IS a
+// supported extension but still fails to decode is reported as a normal
+// per-file failure by the caller (see documentManager.js).
 //
 // Encoding: WAV is written directly (uncompressed PCM, a well-documented
 // and completely reliable format to hand-produce). MP3 is written using
@@ -28,6 +30,53 @@ export function getAudioContext() {
   return sharedAudioContext;
 }
 
+/** Guess a practical file-extension category from a filename, for format decisions. */
+export function extensionOf(filename) {
+  const match = /\.([a-z0-9]+)$/i.exec(filename || "");
+  return match ? match[1].toLowerCase() : "";
+}
+
+// The only audio formats this app knows how to open, per the Pro roadmap.
+// Anything else — including non-audio files that merely sit in the same
+// folder a user is opening from, like an Audacity .aup3 project file — is
+// filtered out by name before it ever reaches the decoder, rather than
+// being handed to decodeAudioData and hoping it fails cleanly. That
+// matters because decodeAudioData's behavior on genuinely non-audio input
+// is not reliably a quick, clean rejection across every engine this app
+// runs on — treating "supported audio file" as an explicit allow-list is
+// both simpler and safer than treating "decode succeeded" as the only
+// signal.
+export const SUPPORTED_AUDIO_EXTENSIONS = ["wav", "mp3", "m4a", "flac", "ogg"];
+
+export function isSupportedAudioExtension(filename) {
+  return SUPPORTED_AUDIO_EXTENSIONS.includes(extensionOf(filename));
+}
+
+// A hard ceiling on how long a single file is allowed to take to decode.
+// Without this, one unusually malformed file partway through a
+// multi-file Open operation could stall the entire batch indefinitely —
+// every file after it would simply never open, with nothing visibly
+// wrong. The extension allow-list above prevents the common case (a
+// non-audio file); this is the backstop for a file that has an audio
+// extension but is corrupt or otherwise pathological.
+const DECODE_TIMEOUT_MS = 20000;
+
+function withTimeout(promise, ms, timeoutMessage) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 /**
  * Decode a File/Blob into an AudioBuffer.
  * @returns {Promise<AudioBuffer>}
@@ -39,13 +88,11 @@ export async function decodeAudioFile(file) {
   // only where broader engine support matters; the promise form is
   // supported everywhere this app targets (Chrome, Edge, Firefox, and
   // Tauri's WebView2), so it is used directly here.
-  return ctx.decodeAudioData(arrayBuffer.slice(0));
-}
-
-/** Guess a practical file-extension category from a filename, for format decisions. */
-export function extensionOf(filename) {
-  const match = /\.([a-z0-9]+)$/i.exec(filename || "");
-  return match ? match[1].toLowerCase() : "";
+  return withTimeout(
+    ctx.decodeAudioData(arrayBuffer.slice(0)),
+    DECODE_TIMEOUT_MS,
+    "This file took too long to decode and was skipped."
+  );
 }
 
 // ---------------------------------------------------------------------
