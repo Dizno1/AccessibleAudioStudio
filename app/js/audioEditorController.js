@@ -215,6 +215,84 @@ function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
 }
 
+/** Thrown by withTimeout() when the wrapped promise never settles in time. */
+class TimeoutError extends Error {}
+
+/**
+ * Races a promise against a hard deadline, so a native command that never
+ * resolves or rejects at all still produces *something* observable
+ * instead of leaving the caller waiting in total silence forever. Never
+ * affects the underlying operation itself — if the real promise later
+ * does settle, that's simply ignored once the timeout has already fired.
+ */
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new TimeoutError(`Timed out after ${Math.round(ms / 1000)} seconds waiting for a response.`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
+ * The one diagnostics update guaranteed to happen no matter what occurs
+ * afterward — recorded synchronously, before the native dialog is even
+ * asked to open. See its call site in openAudioViaTauriCommand() for why
+ * this exists.
+ */
+function markOpenAudioInvoked() {
+  if (!el.openAudioDiagnostics) return;
+  el.openAudioDiagnostics.textContent = `Open Audio invoked: yes, at ${new Date().toLocaleTimeString()}. Waiting for the native dialog to return...`;
+}
+
+/**
+ * Builds a full diagnostics stats object straight from a Rust command
+ * result, for outcomes (currently just "cancelled") that never reach
+ * processOpenedFiles()'s own diagnostics call — used so cancelling the
+ * dialog is still recorded truthfully rather than left unreported.
+ */
+function buildDiagnosticsFromResult(result, { dialogResult }) {
+  return {
+    pathway: "windows-native",
+    dialogLaunched: result.dialog_launched,
+    dialogResult,
+    rustReturnedToJs: true,
+    win32MultiSelect: result.win32_multi_select,
+    wmPasteReceived: result.wm_paste_received,
+    openClipboardSucceeded: result.open_clipboard_succeeded,
+    openClipboardError: result.open_clipboard_error,
+    cfHdropAvailable: result.cf_hdrop_available,
+    availableClipboardFormats: result.available_clipboard_formats,
+    getClipboardDataSucceeded: result.get_clipboard_data_succeeded,
+    dragQueryFileCount: result.drag_query_file_count,
+    pasteHdropDetected: result.paste_hdrop_detected,
+    pasteHdropFileCount: result.paste_hdrop_file_count,
+    pasteHdropFileNames: result.paste_hdrop_file_names,
+    pathsSuppliedToDialog: result.paths_supplied_to_dialog,
+    nativeDialogCount: result.native_dialog_count,
+    boundaryCount: result.files.length + result.read_errors.length,
+    jsReceivedCount: 0,
+    readFailedCount: result.read_errors.length,
+    supportedCount: 0,
+    decodedCount: 0,
+    failedDecodeCount: 0,
+    skippedUnsupportedCount: 0,
+    alreadyOpenCount: 0,
+    reopenedCount: 0,
+    declinedCount: 0,
+    openedCount: 0,
+  };
+}
+
 /**
  * Open Audio's single entry point, used by both the button and Ctrl+O.
  *
@@ -244,18 +322,55 @@ async function triggerOpenAudioDialog() {
   }
 }
 
+// A hard ceiling on how long this app will wait for the Rust command to
+// return before reporting a probable hang. GetOpenFileNameW is a modal
+// call that only returns when the user closes the dialog, so this has to
+// be generous enough not to fire during ordinary, unhurried use — its
+// only job is to turn "the diagnostics panel silently never updates
+// again, forever" into "the diagnostics panel says exactly that," should
+// the native command ever fail to return at all. It cannot cancel or
+// otherwise affect the actual underlying native call — a genuinely hung
+// Rust command stays hung regardless of what this Promise does — it only
+// stops the frontend from waiting on it in total silence.
+const OPEN_AUDIO_INVOKE_TIMEOUT_MS = 5 * 60 * 1000;
+
 async function openAudioViaTauriCommand() {
+  // Recorded synchronously, before the native dialog is even asked to
+  // open — the one piece of this whole lifecycle that is guaranteed to
+  // run no matter what happens afterward, including a Rust command that
+  // never returns at all. Without this, a hang anywhere downstream
+  // leaves the diagnostics panel in its untouched, pristine state
+  // forever, indistinguishable from "Open Audio was never activated" —
+  // exactly the symptom that made a real, repeated test look like it had
+  // never happened.
+  markOpenAudioInvoked();
+
   try {
     const { invoke } = window.__TAURI__.core;
-    const result = await invoke("pick_and_read_audio_files");
+    const result = await withTimeout(
+      invoke("pick_and_read_audio_files"),
+      OPEN_AUDIO_INVOKE_TIMEOUT_MS
+    );
     // result: { dialog_launched, win32_multi_select, wm_paste_received, open_clipboard_succeeded,
     //           open_clipboard_error, cf_hdrop_available, available_clipboard_formats,
     //           get_clipboard_data_succeeded, drag_query_file_count, paste_hdrop_detected,
     //           paste_hdrop_file_count, paste_hdrop_file_names, paths_supplied_to_dialog,
     //           native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
 
-    if (result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0) {
-      return; // user cancelled the dialog
+    const wasCancelled =
+      result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0;
+
+    if (wasCancelled) {
+      // Cancelling the dialog is an entirely ordinary outcome and stays
+      // silent to the user (no alert, no announcement) — but it must
+      // still be recorded, truthfully, as "the dialog returned, and the
+      // result was a cancel," rather than leaving the panel untouched.
+      // Treating "nothing to open" as "nothing to report" was exactly
+      // what let repeated real attempts look like they'd never happened.
+      updateOpenAudioDiagnostics(
+        buildDiagnosticsFromResult(result, { dialogResult: "canceled" })
+      );
+      return;
     }
 
     const files = result.files.map((picked) => {
@@ -267,6 +382,8 @@ async function openAudioViaTauriCommand() {
     await processOpenedFiles(files, {
       pathway: "windows-native",
       dialogLaunched: result.dialog_launched,
+      dialogResult: "opened",
+      rustReturnedToJs: true,
       win32MultiSelect: result.win32_multi_select,
       wmPasteReceived: result.wm_paste_received,
       openClipboardSucceeded: result.open_clipboard_succeeded,
@@ -284,12 +401,16 @@ async function openAudioViaTauriCommand() {
       readFailedCount: result.read_errors.length,
     });
   } catch (err) {
-    // Never silently pretend this worked — a failed invoke means no
-    // picker was ever shown, so the diagnostics panel needs to say that
-    // plainly rather than staying on whatever it last reported.
+    // Never silently pretend this worked — a failed or timed-out invoke
+    // means no result ever came back, so the diagnostics panel needs to
+    // say that plainly rather than staying on whatever markOpenAudioInvoked()
+    // last left it at.
+    const timedOut = err instanceof TimeoutError;
     updateOpenAudioDiagnostics({
       pathway: "windows-native",
-      dialogLaunched: false,
+      dialogLaunched: null, // genuinely unknown: the command never told us either way
+      dialogResult: timedOut ? "no response from Rust (timed out)" : "error",
+      rustReturnedToJs: !timedOut,
       win32MultiSelect: true,
       wmPasteReceived: false,
       openClipboardSucceeded: false,
@@ -316,7 +437,11 @@ async function openAudioViaTauriCommand() {
       openedCount: 0,
       failureReason: err && err.message ? err.message : String(err),
     });
-    announceAlert("Open Audio could not be opened. See the Open Audio Diagnostics panel for details.");
+    announceAlert(
+      timedOut
+        ? "Open Audio did not respond. See the Open Audio Diagnostics panel for details."
+        : "Open Audio could not be opened. See the Open Audio Diagnostics panel for details."
+    );
   }
 }
 
@@ -326,6 +451,8 @@ async function handleOpenAudioInputChange() {
   await processOpenedFiles(Array.from(files), {
     pathway: "browser-input",
     dialogLaunched: false,
+    dialogResult: "not applicable",
+    rustReturnedToJs: null,
     win32MultiSelect: false,
     wmPasteReceived: false,
     openClipboardSucceeded: false,
@@ -378,6 +505,8 @@ async function processOpenedFiles(fileArray, meta) {
   updateOpenAudioDiagnostics({
     pathway: meta.pathway,
     dialogLaunched: meta.dialogLaunched,
+    dialogResult: meta.dialogResult,
+    rustReturnedToJs: meta.rustReturnedToJs,
     win32MultiSelect: meta.win32MultiSelect,
     wmPasteReceived: meta.wmPasteReceived,
     openClipboardSucceeded: meta.openClipboardSucceeded,
@@ -953,9 +1082,24 @@ function updateOpenAudioDiagnostics(stats) {
 
   const isWindowsNativePathway = stats.pathway === "windows-native";
 
+  const invokedLine = "Open Audio invoked: yes.";
+
+  const rustReturnedLine =
+    stats.rustReturnedToJs === null || stats.rustReturnedToJs === undefined
+      ? null
+      : `Rust command returned to JavaScript: ${stats.rustReturnedToJs ? "yes" : "no"}.`;
+
+  const dialogResultLine = stats.dialogResult ? `Native dialog result: ${stats.dialogResult}.` : null;
+
   const dialogLaunchedLine = isWindowsNativePathway
-    ? `Open dialog launched: ${stats.dialogLaunched ? "yes" : "no"}.`
-    : "Open dialog launched: not applicable (browser file picker used).";
+    ? `Native dialog launched: ${
+        stats.dialogLaunched === null || stats.dialogLaunched === undefined
+          ? "unknown"
+          : stats.dialogLaunched
+          ? "yes"
+          : "no"
+      }.`
+    : "Native dialog launched: not applicable (browser file picker used).";
 
   const multiSelectLine = isWindowsNativePathway
     ? `Multi-select enabled: ${stats.win32MultiSelect ? "yes" : "no"}.`
@@ -1040,7 +1184,10 @@ function updateOpenAudioDiagnostics(stats) {
 
   el.openAudioDiagnostics.textContent = [
     `Last Open Audio operation, ${new Date().toLocaleTimeString()}:`,
+    invokedLine,
     stats.failureReason ? `Open Audio could not be completed: ${stats.failureReason}.` : null,
+    rustReturnedLine,
+    dialogResultLine,
     dialogLaunchedLine,
     multiSelectLine,
     wmPasteLine,

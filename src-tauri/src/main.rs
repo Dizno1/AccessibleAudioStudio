@@ -199,8 +199,16 @@ fn read_clipboard_diagnosed() -> ClipboardReadDiagnostics {
         // CF_HDROP specifically — this is what actually answers "what did
         // Explorer really put on the clipboard," rather than only
         // confirming or denying the one format this app looks for.
+        // Bounded defensively: EnumClipboardFormats is documented to
+        // terminate at 0, and the clipboard has a small, finite number of
+        // formats in ordinary use, but this cap ensures that even a
+        // pathological or unexpected return sequence can never turn this
+        // loop into an unbounded one — added specifically after a real
+        // test session where the whole native dialog lifecycle appeared
+        // to stop reporting anything at all, to remove any possibility
+        // this loop contributes to that, however unlikely.
         let mut fmt = 0u32;
-        loop {
+        for _ in 0..256 {
             let next = EnumClipboardFormats(fmt);
             if next == 0 {
                 break;
@@ -533,8 +541,30 @@ unsafe extern "system" fn open_dialog_hook_proc(
 /// `GetOpenFileNameW` with `OFN_EXPLORER | OFN_ALLOWMULTISELECT` — always,
 /// every time Open Audio is activated. See the module-level doc comment
 /// above for what the hook installed here does and why.
+///
+/// `hwndOwner` is set to the app's real main window handle, not `HWND::default()`
+/// (NULL) as in every previous version of this function. Real testing
+/// found the dialog behaving as something less than a genuine modal —
+/// specifically, Shift+Tab immediately left it and returned focus to the
+/// main app window, rather than cycling within the dialog the way a
+/// properly modal Windows dialog does. `GetOpenFileNameW`'s own
+/// documentation is explicit that `hwndOwner` should be "a handle to the
+/// window that owns the dialog box" — with no owner, Windows has no
+/// window to establish the actual modal ownership/z-order relationship
+/// against, which is a plausible, direct explanation for exactly that
+/// symptom. The real HWND is obtained from Tauri's own main window
+/// (`app.get_webview_window("main")`, the label this app's only window
+/// is configured with in `tauri.conf.json`) via its own `hwnd()` method —
+/// a pattern confirmed directly from Tauri's own maintainers discussing
+/// this exact API. The returned handle's raw pointer value is
+/// reconstructed into this file's own `windows::Win32::Foundation::HWND`
+/// (via its single `.0` field, the same pattern already used elsewhere in
+/// this file for other handle types) rather than relied on as the exact
+/// same type, since Tauri may depend on its own, possibly different,
+/// version of the `windows` crate internally.
 #[cfg(windows)]
-fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
+fn pick_files_native(app: &tauri::AppHandle) -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
+    use tauri::Manager;
     use windows::core::PWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Controls::Dialogs::{
@@ -546,6 +576,12 @@ fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    let owner_hwnd: HWND = app
+        .get_webview_window("main")
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| HWND(h.0))
+        .unwrap_or_default();
+
     PASTE_DIAGNOSTICS.with(|d| *d.borrow_mut() = PasteDiagnostics::default());
 
     let filter = to_wide("Audio\0*.wav;*.mp3;*.m4a;*.flac;*.ogg\0All Files\0*.*\0\0");
@@ -554,7 +590,7 @@ fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
 
     let mut ofn = OPENFILENAMEW::default();
     ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-    ofn.hwndOwner = HWND::default();
+    ofn.hwndOwner = owner_hwnd;
     ofn.lpstrFilter = windows::core::PCWSTR(filter.as_ptr());
     ofn.lpstrFile = PWSTR(file_buffer.as_mut_ptr());
     ofn.nMaxFile = file_buffer.len() as u32;
@@ -613,7 +649,9 @@ fn parse_multi_select_buffer(buffer: &[u16]) -> Vec<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
+fn pick_files_native(
+    _app: &tauri::AppHandle,
+) -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
     Err("Windows-native multi-select is only available on Windows.".to_string())
 }
 
@@ -637,8 +675,8 @@ struct PasteDiagnostics {
 /// that fails to read is recorded in `read_errors` rather than aborting
 /// the whole selection.
 #[tauri::command]
-async fn pick_and_read_audio_files() -> Result<PickAudioFilesResult, String> {
-    let (paths, paste_diagnostics) = pick_files_native()?;
+async fn pick_and_read_audio_files(app: tauri::AppHandle) -> Result<PickAudioFilesResult, String> {
+    let (paths, paste_diagnostics) = pick_files_native(&app)?;
     let native_dialog_count = paths.len();
 
     let mut files = Vec::with_capacity(paths.len());

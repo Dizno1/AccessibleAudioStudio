@@ -1106,30 +1106,188 @@ now says so explicitly rather than silently keeping stale data, and the
 user gets a concise accessible alert rather than the silence 0.1.7
 produced.
 
+## 0.1.9 — the diagnostics panel had a real bug, and the version number needed to mean something again
+
+0.1.8-diag's own diagnostics reported the opposite of what the real test
+session showed: "No Open Audio operation has been attempted yet." — after
+Open Audio had genuinely been activated multiple times, the native dialog
+had genuinely appeared multiple times, and Ctrl+V had genuinely been
+pressed multiple times. From the tester's side, the diagnostics
+instrumentation added the round before had apparently made things worse,
+not better.
+
+### Root cause: a real, findable bug — not a mystery regression
+
+`openAudioViaTauriCommand()` contained this, present since 0.1.4 and
+never revisited:
+
+```js
+if (result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0) {
+  return; // user cancelled the dialog
+}
+```
+
+This returns **before `updateOpenAudioDiagnostics` is ever called.**
+Whatever the underlying reason each attempt resolved to zero files (most
+likely, given 0.1.8-diag's own clipboard diagnostics from the same real
+session — `CF_HDROP detected during paste: no` — that the dialog was
+being cancelled, whether by the user or by validation silently rejecting
+the pasted text), every single one of those attempts hit this early
+return and left the diagnostics panel completely untouched. A cancelled
+result was being treated as "nothing happened, nothing to report,"
+which is exactly backwards from what a diagnostics panel is for: a
+cancelled or empty result is itself a result, and needs to be recorded
+as truthfully as a successful one.
+
+This is a plausible complete explanation for the reported symptom on its
+own, with no need to assume a Rust-side hang or crash — though a genuine
+hang would have produced the identical symptom, which is why the fix
+below addresses both possibilities rather than assuming which one
+actually occurred.
+
+### What changed — all in JavaScript; no picker, hook, or clipboard architecture touched
+
+- **Diagnostics are now recorded synchronously, before the native dialog
+  is even asked to open** (`markOpenAudioInvoked()`), specifically so
+  that *something* is always recorded the moment Open Audio is activated
+  — including in the case a Rust command never returns at all, which is
+  the one scenario nothing after an `await invoke(...)` call could ever
+  detect.
+- **A 5-minute timeout now wraps the `invoke()` call** (`withTimeout`).
+  It cannot cancel or otherwise affect the real native call — a
+  genuinely hung Rust command stays hung regardless — its only job is to
+  turn "the panel never updates again, ever, with no way to tell why"
+  into "the panel reports a timeout," should that ever actually be the
+  cause.
+- **The early return on a cancelled result is gone.** A cancelled or
+  empty dialog result now calls `updateOpenAudioDiagnostics` with an
+  explicit `dialogResult: "canceled"` before returning, rather than
+  skipping the panel update entirely.
+- **New explicit fields**, matching each of the five checkpoints
+  requested: "Open Audio invoked," "Rust command returned to JavaScript"
+  (yes/no/unknown), "Native dialog result" (opened / canceled / error /
+  timed out), and "Native dialog launched" (now `null`-aware — reported
+  as "unknown" rather than a misleading "no" for the one case where the
+  command failed to return at all and Rust never got to say either way).
+- **One small, defensive Rust-side change, not a new feature:** the
+  `EnumClipboardFormats` loop introduced last round was an unbounded
+  `loop { ... }` relying on the documented "returns 0 to end enumeration"
+  contract. It was very likely already safe, but it was also the one
+  piece of genuinely new Rust logic added the round this regression
+  showed up, so it now has a hard 256-iteration cap — the clipboard has
+  a small, fixed number of formats in ordinary use, so this changes
+  nothing about normal behavior, and removes any possibility, however
+  small, that this specific loop contributes to a hang.
+
+Nothing about the picker, the dialog hook, the subclass mechanism, or
+the clipboard-reading logic itself was rewritten, per the correction
+directive — the diagnosed and still-unresolved question from 0.1.8-diag
+(why `CF_HDROP` reports unavailable after a real Explorer copy) remains
+exactly where it was, now with diagnostics that will actually surface it
+reliably on the next test.
+
+### Versioning
+
+Per explicit instruction: this is the first build number change in
+several rounds specifically because "0.1.8" had come to refer to at
+least five materially different binaries (the original paste-hook
+build, three separate compile fixes, and the diagnostic-instrumentation
+build), making it useless for identifying which one had actually been
+tested. 0.1.9 is a genuinely new, distinct build.
+
+## 0.1.10 — the dialog was never a real modal: hwndOwner was NULL
+
+Real testing of 0.1.9 reported something new and specific: the Open
+dialog didn't feel like it had actually opened. Pressing Shift+Tab
+immediately left it and returned focus to the main application window —
+not the behavior of a genuine modal dialog, which should keep Tab/
+Shift+Tab cycling within its own controls until it's explicitly closed.
+
+### Root cause
+
+Every version of `pick_files_native` since 0.1.6 set:
+
+```rust
+ofn.hwndOwner = HWND::default();
+```
+
+`HWND::default()` is `NULL`. `GetOpenFileNameW`'s own documentation is
+direct about what this parameter is for: "a handle to the window that
+owns the dialog box." With no owner window, Windows has nothing to
+establish the dialog's modal ownership and z-order relationship
+against — the dialog can still be shown, but it isn't properly parented
+to anything, which is a direct, plausible explanation for exactly the
+reported symptom (no real focus containment, Tab escaping immediately).
+This had been present, unnoticed, in every build since the first
+`GetOpenFileNameW`-based implementation — none of the intervening
+compile fixes or diagnostic passes had reason to touch this specific
+line, since it doesn't produce a compile error or an obviously wrong
+diagnostic count, only a real accessibility defect only apparent when
+actually navigating the dialog with a keyboard.
+
+### Fixed
+
+`pick_files_native` now takes `app: &tauri::AppHandle` and obtains the
+real main window handle before building `OPENFILENAMEW`:
+
+```rust
+let owner_hwnd: HWND = app
+    .get_webview_window("main")
+    .and_then(|w| w.hwnd().ok())
+    .map(|h| HWND(h.0))
+    .unwrap_or_default();
+```
+
+`"main"` matches this app's own window label in `tauri.conf.json` — not
+guessed. `app.get_webview_window(label).hwnd()` was confirmed as the
+correct, current Tauri API by finding Tauri's own maintainers describing
+this exact call in a public discussion, not inferred from unrelated
+examples. The returned handle's raw pointer value is reconstructed into
+this file's own `windows::Win32::Foundation::HWND` via its `.0` field
+— the same defensive pattern already used elsewhere in this file for
+crossing handle types between different origins — specifically because
+Tauri may depend on its own, possibly different, version of the
+`windows` crate internally, and this sidesteps needing the two to be
+the literal same type.
+
+`pick_and_read_audio_files` (the Tauri command) now declares
+`app: tauri::AppHandle` as a parameter; Tauri injects this
+automatically from its own IPC layer, so no frontend change was needed
+— the existing `invoke("pick_and_read_audio_files")` call, with no
+arguments, is untouched.
+
+### What this does and doesn't explain
+
+This is a real, direct, plausible explanation for "the dialog didn't
+feel real, Tab escaped it" — but it is a different question from why
+`CF_HDROP` reports unavailable after a genuine Explorer copy, which
+remains open. It's possible proper modal ownership changes that
+picture too (a dialog that wasn't a real modal could plausibly interact
+with focus/paste/clipboard state differently than one that is), but
+that's a hypothesis for the next real test to confirm or rule out, not
+a claim made here.
+
 ## Recommended next phase
 
-Build 0.1.8 via GitHub Actions and, on real Windows, reproduce the exact
-workflow: select several audio files in File Explorer, Ctrl+C, switch to
-AccessibleAudioStudio Pro, Ctrl+O. First confirm the native dialog actually
-appears — 0.1.7 regressed this specifically. Move to the File Name field
-and press Ctrl+V; whatever text (if any) appears there is itself useful
-information, independent of what happens next. Activate Open, then open
-the Open Audio Diagnostics panel: "CF_HDROP detected during paste" and
-"Files contained in CF_HDROP" will show definitively whether the paste
-interception ran, separate from whether `GetOpenFileNameW` actually
-accepted the resulting text as a real multi-selection — those are two
-different questions, and the diagnostics now separate them. If the
-interception never ran, the control-finding logic didn't work (the 0x47C
-ID, or the candidate-parent guessing, needs a different approach). If it
-ran but the dialog still returned only one file, `GetOpenFileNameW`'s
-own paste-driven multi-name parsing doesn't work the way its
-list-view-driven multi-select does, and that's a fundamentally different,
-harder problem worth discussing before attempting a seventh picker
-change. Also confirm plain Ctrl+O with nothing copied still opens the
-dialog and behaves exactly as in 0.1.6, and that document/window title,
-H1, skip links, footer, and landmark structure are all still correct.
-After multi-file intake is confirmed working for real via this workflow:
-a fair trial of the current document-switching combo box, then markers
+Build 0.1.10 via GitHub Actions and, with a real screen reader running,
+confirm the modal-ownership fix first: activate Open Audio, and check
+whether Tab/Shift+Tab now cycles within the dialog's own controls
+instead of immediately escaping back to the main window. That's the
+single most direct thing to verify, since it's a plain keyboard/focus
+behavior, not something that needs the diagnostics panel to interpret.
+Then reproduce the full workflow once more — File Explorer multi-select,
+Ctrl+C, switch to this app, Ctrl+O, File Name field, Ctrl+V, activate
+Open — and open Open Audio Diagnostics afterward. Confirm the panel still
+updates on every attempt (0.1.9's fix), then look at whether proper
+modal ownership changed anything about the clipboard-boundary picture:
+does `CF_HDROP available` still report `no` after a genuine `WM_PASTE`,
+or does correct dialog ownership change that behavior too? Those are
+two separate, real questions, and this build doesn't assume which way
+either one goes. Also confirm plain Ctrl+O with nothing copied still
+opens the dialog and behaves exactly as in 0.1.6, and that document/
+window title, H1, skip links, footer, and landmark structure are all
+still correct. After multi-file intake is confirmed working for real: a
+fair trial of the current document-switching combo box, then markers
 (Phase 6), since several editing operations here (set selection
 start/end, navigate by increment) already share the underlying mechanics
 markers will need.
