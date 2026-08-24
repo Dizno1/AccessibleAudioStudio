@@ -1,6 +1,6 @@
 [package]
 name = "accessibleaudiostudio-pro"
-version = "0.1.6"
+version = "0.1.7"
 description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
@@ -19,21 +19,20 @@ rust-version = "1.77.2"
 # Windows treating a Pro test build as an upgrade of, or collision with, the
 # published free edition.
 #
-# windows (0.1.6): "Open Audio" now shows Windows' classic Explorer-style
-# multi-select "Open" dialog via the plain, non-COM GetOpenFileNameW API
-# (OFN_EXPLORER | OFN_ALLOWMULTISELECT) — see pick_files_native in
-# src/main.rs — the same class of mechanism Audacity's own Windows build
-# uses for this dialog. This replaced 0.1.5's approach (the modern
-# IFileOpenDialog COM interface, via the small `wfd` crate), which itself
-# had replaced 0.1.2–0.1.4's tauri-plugin-dialog. Real Windows testing
-# reported the identical symptom — "returned: 1 file," regardless of
-# selection size — for BOTH of those independently-implemented, COM-based
-# multi-select APIs, with the Open Audio Diagnostics panel proving every
-# stage downstream of the dialog call itself was processing that one file
-# correctly both times. GetOpenFileNameW is a deliberately different kind
-# of API (a single non-COM function call, no COM interfaces, no COM
-# threading-model initialization at all) rather than a third variation on
-# the same COM-based mechanism. `wfd` is no longer a dependency.
+# windows (0.1.6, extended 0.1.7): "Open Audio" shows Windows' classic
+# Explorer-style multi-select "Open" dialog via the plain, non-COM
+# GetOpenFileNameW API (OFN_EXPLORER | OFN_ALLOWMULTISELECT) — see
+# pick_files_native in src/main.rs. 0.1.7 added a second mechanism ahead
+# of that dialog: read_clipboard_file_list reads a Windows Shell copied
+# file list (CF_HDROP, via OpenClipboard/GetClipboardData/DragQueryFileW)
+# when Open Audio is activated, for the "copy files in Explorer, switch
+# to this app, Open Audio" workflow — pasting that copied selection into
+# the dialog's own File Name field cannot work by design (Explorer's
+# multi-file copy never places a text clipboard format, only CF_HDROP;
+# see the doc comment on read_clipboard_file_list in src/main.rs for the
+# full explanation and source). Feature Win32_UI_Shell added for
+# DragQueryFileW; Win32_System_DataExchange for the clipboard functions;
+# Win32_System_Ole for the CF_HDROP constant.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -44,13 +43,19 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Windows-only: the native multi-select "Open Audio" picker (see
-# pick_files_native in src/main.rs, GetOpenFileNameW/OPENFILENAMEW). Not
-# needed on other platforms, so it's scoped to the windows target rather
-# than pulled in unconditionally.
+# Windows-only: the native "Open Audio" picker and clipboard file-list
+# detection (see pick_files_native and read_clipboard_file_list in
+# src/main.rs). Not needed on other platforms, so it's scoped to the
+# windows target rather than pulled in unconditionally.
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
-features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs"]
+features = [
+  "Win32_Foundation",
+  "Win32_UI_Controls_Dialogs",
+  "Win32_UI_Shell",
+  "Win32_System_DataExchange",
+  "Win32_System_Ole",
+]
 
 [[bin]]
 name = "accessibleaudiostudio-pro"

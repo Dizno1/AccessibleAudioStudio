@@ -13,8 +13,8 @@ This repository includes `.github/workflows/build-windows.yml`, which builds the
 1. Push this repository to GitHub (if it isn't already).
 2. Tag a Pro release and push the tag:
    ```
-   git tag pro-v0.1.6
-   git push origin pro-v0.1.6
+   git tag pro-v0.1.7
+   git push origin pro-v0.1.7
    ```
    Use the current version from `src-tauri/tauri.conf.json` -- see `README.md`, "Pro version numbering." Every Pro test build gets its own incremented version and its own tag; never reuse a version number for a different build.
 3. GitHub Actions runs automatically, builds both installers on a real Windows VM, and creates a **draft** GitHub Release with them attached.
@@ -31,8 +31,8 @@ If you'd rather build on your own Windows machine instead of using GitHub Action
 
 | Expected file | Produced by | Notes |
 |---|---|---|
-| `AccessibleAudioStudio Pro_0.1.6_x64_en-US.msi` | WiX (msi) target | Recommended installer -- standard Windows Installer package |
-| `AccessibleAudioStudio Pro_0.1.6_x64-setup.exe` | NSIS target | Alternate installer -- setup executable |
+| `AccessibleAudioStudio Pro_0.1.7_x64_en-US.msi` | WiX (msi) target | Recommended installer -- standard Windows Installer package |
+| `AccessibleAudioStudio Pro_0.1.7_x64-setup.exe` | NSIS target | Alternate installer -- setup executable |
 
 Exact filenames depend on the Tauri/WiX/NSIS versions and the current version in `src-tauri/tauri.conf.json` at build time -- check `src-tauri/target/release/bundle/msi/` and `src-tauri/target/release/bundle/nsis/` after a successful build and copy whatever was actually produced there, updating the table above (including real file sizes) to match. The filename always reflects the app's current product name and version automatically -- there is nothing to configure separately for this.
 

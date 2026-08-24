@@ -248,10 +248,11 @@ async function openAudioViaTauriCommand() {
   try {
     const { invoke } = window.__TAURI__.core;
     const result = await invoke("pick_and_read_audio_files");
-    // result: { windows_native_multi_select, native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
+    // result: { clipboard_file_list_detected, clipboard_file_count, win32_multi_select,
+    //           dialog_returned_count, native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
 
     if (result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0) {
-      return; // user cancelled the dialog
+      return; // user cancelled the dialog (only reachable when the clipboard wasn't used)
     }
 
     const files = result.files.map((picked) => {
@@ -263,6 +264,9 @@ async function openAudioViaTauriCommand() {
     await processOpenedFiles(files, {
       pathway: "windows-native",
       win32MultiSelect: result.win32_multi_select,
+      clipboardDetected: result.clipboard_file_list_detected,
+      clipboardFileCount: result.clipboard_file_count,
+      dialogReturnedCount: result.dialog_returned_count,
       nativeDialogCount: result.native_dialog_count,
       boundaryCount: result.files.length + result.read_errors.length,
       readFailedCount: result.read_errors.length,
@@ -274,6 +278,9 @@ async function openAudioViaTauriCommand() {
     updateOpenAudioDiagnostics({
       pathway: "windows-native",
       win32MultiSelect: true,
+      clipboardDetected: false,
+      clipboardFileCount: 0,
+      dialogReturnedCount: 0,
       nativeDialogCount: 0,
       boundaryCount: 0,
       jsReceivedCount: 0,
@@ -298,6 +305,9 @@ async function handleOpenAudioInputChange() {
   await processOpenedFiles(Array.from(files), {
     pathway: "browser-input",
     win32MultiSelect: false,
+    clipboardDetected: false,
+    clipboardFileCount: 0,
+    dialogReturnedCount: null,
     nativeDialogCount: null,
     boundaryCount: null,
     readFailedCount: 0,
@@ -338,6 +348,9 @@ async function processOpenedFiles(fileArray, meta) {
   updateOpenAudioDiagnostics({
     pathway: meta.pathway,
     win32MultiSelect: meta.win32MultiSelect,
+    clipboardDetected: meta.clipboardDetected,
+    clipboardFileCount: meta.clipboardFileCount,
+    dialogReturnedCount: meta.dialogReturnedCount,
     nativeDialogCount: meta.nativeDialogCount,
     boundaryCount: meta.boundaryCount,
     jsReceivedCount,
@@ -901,23 +914,41 @@ function updateOpenAudioDiagnostics(stats) {
 
   const isWindowsNativePathway = stats.pathway === "windows-native";
 
+  const clipboardDetectedLine = isWindowsNativePathway
+    ? `Windows Shell clipboard file list detected: ${stats.clipboardDetected ? "yes" : "no"}.`
+    : "Windows Shell clipboard file list detected: not applicable (browser file picker used).";
+
+  const clipboardCountLine = isWindowsNativePathway
+    ? `Files present in Windows Shell clipboard: ${stats.clipboardFileCount}.`
+    : null;
+
   const multiSelectLine = isWindowsNativePathway
-    ? `Win32 multi-select requested: ${stats.win32MultiSelect ? "yes" : "no"}.`
-    : "Win32 multi-select requested: not applicable (browser file picker used).";
+    ? `Open dialog multi-select enabled: ${stats.win32MultiSelect ? "yes" : "no"}.`
+    : "Open dialog multi-select enabled: not applicable (browser file picker used).";
 
-  const nativeLine = isWindowsNativePathway
-    ? `Win32 picker returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
-    : "Win32 picker: not applicable.";
+  // "Open dialog returned" only applies when the dialog was actually
+  // shown — a clipboard-detected multi-file copy skips the dialog
+  // entirely (see read_clipboard_file_list in src-tauri/src/main.rs for
+  // why: pasting a copied Explorer selection into the dialog's own File
+  // Name field cannot recover more than one file, by design, regardless
+  // of what this app does).
+  const dialogReturnedLine =
+    isWindowsNativePathway && !stats.clipboardDetected
+      ? `Open dialog returned: ${stats.dialogReturnedCount} file${stats.dialogReturnedCount === 1 ? "" : "s"}.`
+      : isWindowsNativePathway
+      ? "Open dialog returned: not applicable (clipboard file list used instead)."
+      : "Open dialog: not applicable.";
 
-  // As of 0.1.6, picking (via GetOpenFileNameW, Windows' classic
-  // Explorer-style multi-select dialog) and reading both happen in one
-  // Rust command before anything crosses back to JavaScript — so "passed
-  // across the Rust/Tauri boundary" and "read successfully" are reported
-  // from the same single IPC response, not from two separate round trips
-  // a different architecture might use. Both are still reported as
-  // distinct numbers so a mismatch between them (something lost during
-  // Rust-side reading, or during IPC serialization back to JS) stays
-  // visible either way.
+  const clipboardSuppliedLine = isWindowsNativePathway
+    ? `Clipboard file paths supplied to application: ${stats.clipboardDetected ? stats.clipboardFileCount : 0} file${(stats.clipboardDetected ? stats.clipboardFileCount : 0) === 1 ? "" : "s"}.`
+    : null;
+
+  // As of 0.1.6, picking and reading both happen in one Rust command
+  // before anything crosses back to JavaScript — so "passed across the
+  // Rust/Tauri boundary" and "read successfully" are reported from the
+  // same single IPC response, not from two separate round trips a
+  // different architecture might use. Both are still reported as
+  // distinct numbers so a mismatch between them stays visible either way.
   const boundaryLine = isWindowsNativePathway
     ? `Passed across Rust/Tauri boundary: ${stats.boundaryCount} file${stats.boundaryCount === 1 ? "" : "s"}.`
     : "Rust/Tauri boundary: not applicable.";
@@ -929,8 +960,11 @@ function updateOpenAudioDiagnostics(stats) {
   el.openAudioDiagnostics.textContent = [
     `Last Open Audio operation, ${new Date().toLocaleTimeString()}:`,
     stats.failureReason ? `The picker could not be opened: ${stats.failureReason}.` : null,
+    clipboardDetectedLine,
+    clipboardCountLine,
     multiSelectLine,
-    nativeLine,
+    dialogReturnedLine,
+    clipboardSuppliedLine,
     boundaryLine,
     readLine,
     `Received in JavaScript: ${stats.jsReceivedCount} file${stats.jsReceivedCount === 1 ? "" : "s"}.`,
