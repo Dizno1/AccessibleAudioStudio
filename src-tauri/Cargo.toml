@@ -30,13 +30,20 @@ rust-version = "1.77.2"
 # Explorer file list (CF_HDROP) into the quoted multi-name text
 # GetOpenFileNameW's own field already knows how to parse — see the
 # extensive doc comment at the top of src/main.rs for the full mechanism,
-# and for what is and is not verified about it. Features added for this:
-# Win32_UI_WindowsAndMessaging (GetDlgItem, GetParent, WM_NOTIFY, WM_PASTE,
-# SetWindowTextW) and Win32_UI_Controls (NMHDR, SetWindowSubclass,
-# DefSubclassProc). Win32_UI_Shell, Win32_System_DataExchange, and
-# Win32_System_Ole remain from 0.1.7's clipboard-reading code, which 0.1.8
-# still uses — now from inside the paste interception instead of before
-# the dialog.
+# and for what is and is not verified about it. Win32_UI_WindowsAndMessaging
+# provides GetDlgItem, GetParent, WM_NOTIFY, WM_PASTE, SetWindowTextW.
+# Win32_UI_Shell, Win32_System_DataExchange, and Win32_System_Ole remain
+# from 0.1.7's clipboard-reading code, which 0.1.8 still uses — now from
+# inside the paste interception instead of before the dialog. As of
+# 0.1.8's second compile round, SetWindowSubclass/DefSubclassProc/
+# RemoveWindowSubclass are no longer imported from this crate at all —
+# SetWindowSubclass failed to resolve entirely in the real Windows build,
+# most likely because these Comctl32 subclassing helpers simply aren't in
+# this crate/feature combination's generated bindings; they're declared as
+# raw FFI against comctl32.dll directly in src/main.rs instead, so
+# Win32_UI_Controls (which existed only for those three functions and the
+# NMHDR type, itself replaced by a hand-written struct for the same reason)
+# is no longer a needed feature.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -56,7 +63,6 @@ serde_json = "1"
 version = "0.58"
 features = [
   "Win32_Foundation",
-  "Win32_UI_Controls",
   "Win32_UI_Controls_Dialogs",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",

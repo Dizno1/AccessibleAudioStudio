@@ -229,6 +229,70 @@ fn build_quoted_multi_name(paths: &[PathBuf]) -> String {
         .join(" ")
 }
 
+/// Raw FFI declarations for the three Comctl32 window-subclassing helper
+/// functions used by the hook below. Declared here directly, linked
+/// against `comctl32.dll`, rather than imported from the `windows`
+/// crate — after `windows::Win32::UI::Controls::SetWindowSubclass`
+/// itself failed to resolve at all in the real Windows build (not a
+/// type mismatch this time, an unresolved symbol), the most likely
+/// explanation is that these particular Comctl32 helper functions simply
+/// aren't present in this crate/feature combination's generated
+/// bindings at all — Microsoft's own win32metadata project, which
+/// `windows-rs` generates its bindings from, doesn't cover every Win32
+/// API, and these window-subclassing helpers are a comparatively obscure
+/// corner of it. Rather than guess at a different module path or a
+/// different crate version (which would risk the exact "dependency
+/// roulette" this correction explicitly asked to avoid), declaring the
+/// three functions directly removes any dependency on `windows-rs`
+/// having generated bindings for them, while their C signatures — which
+/// haven't changed since Windows XP — are well-documented and stable:
+/// `BOOL SetWindowSubclass(HWND, SUBCLASSPROC, UINT_PTR, DWORD_PTR)`,
+/// `BOOL RemoveWindowSubclass(HWND, SUBCLASSPROC, UINT_PTR)`,
+/// `LRESULT DefSubclassProc(HWND, UINT, WPARAM, LPARAM)`
+/// (commctrl.h). The `HWND`/`WPARAM`/`LPARAM`/`LRESULT` types used in
+/// these declarations are still the ordinary `windows` crate ones —
+/// each is a `#[repr(transparent)]` wrapper with the exact same ABI
+/// layout as the raw type it wraps, so using them here is exactly as
+/// correct as declaring the parameters as raw pointers/integers
+/// directly, with the benefit of staying consistent with every other
+/// signature in this file. Only the three *function* bindings
+/// themselves — the specific thing that failed to resolve — are
+/// hand-declared instead of crate-provided.
+#[cfg(windows)]
+type SubclassProc = unsafe extern "system" fn(
+    windows::Win32::Foundation::HWND,
+    u32,
+    windows::Win32::Foundation::WPARAM,
+    windows::Win32::Foundation::LPARAM,
+    usize,
+    usize,
+) -> windows::Win32::Foundation::LRESULT;
+
+#[cfg(windows)]
+#[link(name = "comctl32")]
+extern "system" {
+    fn SetWindowSubclass(
+        hwnd: windows::Win32::Foundation::HWND,
+        subclass_proc: SubclassProc,
+        subclass_id: usize,
+        ref_data: usize,
+    ) -> i32; // BOOL
+
+    #[allow(dead_code)] // kept for completeness/symmetry; not currently called — see the module doc comment on subclass lifetime
+    fn RemoveWindowSubclass(
+        hwnd: windows::Win32::Foundation::HWND,
+        subclass_proc: SubclassProc,
+        subclass_id: usize,
+    ) -> i32; // BOOL
+
+    fn DefSubclassProc(
+        hwnd: windows::Win32::Foundation::HWND,
+        msg: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT;
+}
+
 /// Window subclass procedure installed on the File Name control. Handles
 /// exactly one message, WM_PASTE; every other message goes straight to
 /// `DefSubclassProc`, unmodified default behavior.
@@ -241,7 +305,6 @@ unsafe extern "system" fn paste_subclass_proc(
     _subclass_id: usize,
     _ref_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::Controls::DefSubclassProc;
     use windows::Win32::UI::WindowsAndMessaging::WM_PASTE;
 
     if msg == WM_PASTE {
@@ -318,7 +381,6 @@ unsafe extern "system" fn open_dialog_hook_proc(
     _wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> usize {
-    use windows::Win32::UI::Controls::SetWindowSubclass;
     use windows::Win32::UI::WindowsAndMessaging::{GetDlgItem, GetParent, WM_NOTIFY};
 
     if msg != WM_NOTIFY {
@@ -351,7 +413,14 @@ unsafe extern "system" fn open_dialog_hook_proc(
         // was exactly that mix-up, caught by the real Windows compiler.
         if let Ok(combo) = GetDlgItem(parent, FILENAME_COMBO_ID) {
             if combo != windows::Win32::Foundation::HWND::default() {
-                let _ = SetWindowSubclass(combo, Some(paste_subclass_proc), SUBCLASS_ID, 0);
+                // paste_subclass_proc is passed directly, not
+                // Some()-wrapped — the raw FFI declaration above (unlike
+                // windows-rs's own Option-wrapped LPOFNHOOKPROC pattern
+                // used for lpfnHook below) declares this parameter as a
+                // plain, always-required function pointer, matching how
+                // SetWindowSubclass's C signature actually works: a null
+                // callback is never a valid, meaningful call here.
+                let _ = SetWindowSubclass(combo, paste_subclass_proc, SUBCLASS_ID, 0);
                 break;
             }
         }

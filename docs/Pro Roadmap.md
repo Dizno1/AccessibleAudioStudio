@@ -874,6 +874,74 @@ guessing at a different import path. The diff against the previous
 handling; nothing else in the repository, including the dialog's own
 `GetOpenFileNameW`/`OPENFILENAMEW` setup, was touched.
 
+### Third compile fix and full audit (same 0.1.8, no version change)
+
+The next real Windows build failed a third time: `SetWindowSubclass`
+itself was unresolved — not a type mismatch this time, an unresolved
+symbol, meaning `windows::Win32::UI::Controls::SetWindowSubclass`
+doesn't exist at that path in this crate/feature combination at all.
+
+By this point the pattern was clear enough to name directly: three
+compile failures in a row, each a different kind of binding mismatch in
+the same block of hand-written Win32 code, is a real signal about the
+limits of guessing at an obscure corner of `windows-rs`'s generated
+surface without a compiler to check against — not a reason to keep
+patching one symbol at a time and hoping the next build is clean.
+
+**Root cause:** `SetWindowSubclass`, `DefSubclassProc`, and
+`RemoveWindowSubclass` are Comctl32 window-subclassing helpers —
+declared in `commctrl.h`, not part of the core Win32 API surface that
+`windows-rs`'s code generation (from Microsoft's own win32metadata
+project) covers exhaustively. It's plausible these three simply aren't
+present in this crate/feature combination's generated bindings under
+any reasonable feature name — a different situation from the previous
+two fixes, which were genuine mistakes in how this file used bindings
+that *did* exist.
+
+**Fixed** by removing the dependency on `windows-rs` providing these
+three functions at all. Their C signatures are simple and have been
+stable since Windows XP (`BOOL SetWindowSubclass(HWND, SUBCLASSPROC,
+UINT_PTR, DWORD_PTR)`, `BOOL RemoveWindowSubclass(HWND, SUBCLASSPROC,
+UINT_PTR)`, `LRESULT DefSubclassProc(HWND, UINT, WPARAM, LPARAM)`), so
+all three are now declared directly via `extern "system"` linked
+against `comctl32.dll`, using the ordinary `windows` crate's
+`HWND`/`WPARAM`/`LPARAM`/`LRESULT` types for the parameters (safe to do
+regardless of whether the *functions* are exported, since these are
+just `#[repr(transparent)]` wrappers with the exact same ABI as the raw
+types they hold) — verified structurally by building an isolated,
+minimal version of this exact `extern` block pattern (function-pointer
+typedef, `#[link(name = "comctl32")]`, the calling convention, and an
+`#[allow(dead_code)]` attribute on the unused `RemoveWindowSubclass`)
+with a real `rustc` in this sandbox; it compiles clean. `Win32_UI_Controls`
+is no longer a needed crate feature, since nothing in this file imports
+from it anymore.
+
+**Full audit, as requested, of every Windows API this file touches** —
+not just the one that just failed:
+
+| API | Status |
+|---|---|
+| `GetOpenFileNameW` / `OPENFILENAMEW` / `OFN_*` flags / `CommDlgExtendedError` | Compiler-confirmed working — every previous real build reached and passed this code before failing further along |
+| `LPOFNHOOKPROC` / `ofn.lpfnHook = Some(open_dialog_hook_proc)` | Compiler-confirmed working, same reason |
+| `WM_NOTIFY`, `WM_PASTE`, `SetWindowTextW` | Compiler-confirmed working — never flagged across four real build attempts |
+| `GetDlgItem`, `GetParent` | Compiler-confirmed working as of the first compile fix (`GetDlgItem(parent, ...)`, no `Some()`) |
+| `CDN_INITDONE`, `NMHDR` layout | Fixed in the second compile fix (hand-defined `RawNmhdr` + hardcoded constant); unverified by any compiler since it's new this round too, but unchanged since that fix |
+| `SetWindowSubclass`, `RemoveWindowSubclass`, `DefSubclassProc` | Fixed this round (raw FFI); **new, unverified by any compiler** |
+| `OpenClipboard`, `GetClipboardData`, `CloseClipboard`, `IsClipboardFormatAvailable`, `CF_HDROP`, `DragQueryFileW`, the `HDROP`/`HANDLE` pointer handling | Compiler-confirmed working since the very first compile fix — never flagged again in any of the three subsequent build attempts |
+| Callback signatures (`open_dialog_hook_proc`, `paste_subclass_proc`) | Compiler-confirmed working as function signatures; the new `SubclassProc` type alias used to pass `paste_subclass_proc` to the raw `SetWindowSubclass` is new this round |
+
+**What this environment could and could not compile or execute, stated
+directly as asked:** nothing. This sandbox has no Windows Rust target
+and cannot compile, link, or run any of this file's Windows-specific
+code — confirmed directly, not assumed, across every build since 0.1.4.
+What's different about this pass is the audit above distinguishes
+*compiler-confirmed* (four real Windows builds have now exercised most
+of this file without complaint) from *new and still unverified* (the
+`RawNmhdr`/`CDN_INITDONE` hand-definitions from the second fix, and the
+raw FFI subclass declarations from this one) — narrowing, build over
+build, exactly which lines still carry real risk instead of treating
+the whole file as equally uncertain.
+
 ## 0.1.8 — reverted the bypass, attempted live paste interception instead
 
 Real Windows testing of 0.1.7 found the clipboard-bypass approach
