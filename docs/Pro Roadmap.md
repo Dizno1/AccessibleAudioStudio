@@ -815,23 +815,147 @@ code — confirmed directly, not assumed. What differs in 0.1.7 specifically
 is that this one function has a real, acknowledged signature ambiguity
 that 0.1.6's did not.
 
+## 0.1.8 — reverted the bypass, attempted live paste interception instead
+
+Real Windows testing of 0.1.7 found the clipboard-bypass approach
+produced **no dialog at all, no files, and no announcement of any
+kind** — silence, not a wrong count or a specific error. That's a
+distinct and more serious failure mode than anything reported before it.
+
+### Root cause, best assessment
+
+The most likely explanation: a Rust panic somewhere inside
+`read_clipboard_file_list` (called unconditionally, before the dialog,
+on every Ctrl+O), occurring in a `#[tauri::command] async fn`. An
+unhandled panic inside a Tauri command doesn't reject the frontend's
+`invoke()` promise the way a normal `Err` return does — it aborts that
+invocation without ever resolving or rejecting anything, which is
+exactly "nothing happened, no announcement, no error" from the user's
+side. This is stated as the most likely explanation, not a confirmed
+one — this environment cannot run the code to prove it — but it fits the
+symptom precisely, and it's consistent with the one piece of 0.1.7 that
+was explicitly flagged at the time as carrying real signature
+uncertainty (`DragQueryFileW`'s exact buffer-parameter shape).
+
+Per the correction directive for this build: the fix is not to debug
+that specific panic. It's to remove the bypass that made every Ctrl+O
+depend on that code path succeeding at all.
+
+### What changed
+
+**Removed entirely:** the clipboard-check-before-the-dialog logic from
+0.1.7. `pick_and_read_audio_files` now always calls `pick_files_native()`
+and the native `GetOpenFileNameW` dialog always appears — no exceptions,
+no clipboard inspection beforehand. This directly satisfies the
+correction directive's core requirement: "Ctrl+O and the Open Audio
+button must ALWAYS open the normal native Windows Open Audio dialog."
+
+**Added:** the mechanism 0.1.7 had deliberately declined to attempt — a
+live interception of Ctrl+V *inside* the dialog. `pick_files_native()`
+now sets `OFN_ENABLEHOOK` with a hook procedure
+(`open_dialog_hook_proc`) that, on the `CDN_INITDONE` notification,
+locates the File Name `ComboBoxEx32` control (control ID `0x47C`,
+independently corroborated from a Microsoft MVP's public description of
+this exact control's nesting) and installs a window subclass
+(`SetWindowSubclass`) on it. That subclass procedure
+(`paste_subclass_proc`) intercepts exactly one message, `WM_PASTE`: if
+the clipboard holds a copied Explorer file list (`CF_HDROP`, 2+ paths,
+via the same reading logic 0.1.7 introduced — kept, just relocated),
+the paste is replaced with a quoted multi-name string —
+`"C:\path\a.mp3" "C:\path\b.wav"` — which is `GetOpenFileNameW`'s own
+documented syntax for typing more than one filename directly into that
+field. The user stays in the dialog and activates Open normally; the
+already-unit-tested `parse_multi_select_buffer` (unchanged since 0.1.6)
+reads the result exactly as it would any other multi-selection, so no
+changes were needed to the processing pipeline at all — satisfying "Do
+not redesign or rewrite decoding or document creation."
+
+### Defensive design — every layer fails silently back to normal
+
+This is, without qualification, the deepest and least-verifiable
+Windows-specific code shipped in this project. Given the real risk that
+a hand-written dialog hook, done wrong, can hang or corrupt the entire
+native dialog (not merely fail to add a feature), every layer here is
+written to fail back to completely ordinary dialog behavior rather than
+risk that:
+
+- The hook procedure only acts on `CDN_INITDONE`; every other message
+  returns 0 immediately (the standard "not handled, use default
+  processing" response for an Explorer-style OFN hook).
+- Finding the File Name control tries three different candidate parent
+  windows in turn (the hook's own `hdlg` parameter, its `GetParent`, and
+  the notification's `hwndFrom`) — which one is actually correct for
+  this specific hook type could not be confirmed here, so all three are
+  tried defensively; each is a read-only query that can only return a
+  null handle on a wrong guess, never a crash.
+- If the control isn't found, or `SetWindowSubclass` fails, the code
+  simply does nothing further — the dialog behaves exactly as if no hook
+  were installed at all.
+- The subclass procedure only acts on `WM_PASTE`; every other message
+  goes straight to `DefSubclassProc`, unmodified default behavior.
+- If the clipboard read inside the subclass fails or finds fewer than 2
+  files, `WM_PASTE` also falls through to `DefSubclassProc` — ordinary
+  default paste, unchanged.
+
+### What is and is not verified
+
+Confirmed directly against Microsoft's own generated Rust API
+documentation: the `LPOFNHOOKPROC` signature, `OFNOTIFY`/`NMHDR` shapes,
+the `CDN_INITDONE` code, and the `SetWindowSubclass`/`DefSubclassProc`
+signatures — including catching a real signature mismatch before
+shipping it (`GetDlgItem` takes `Option<HWND>`, not a bare `HWND`;
+caught by checking the documented signature directly, not by a
+compiler, since none is available here). Corroborated from an
+independent source: the `0x47C` control ID and its
+`ComboBoxEx32→ComboBox→Edit` nesting, from a Microsoft MVP's public
+description of exactly this dialog's control hierarchy.
+
+**Not verified, and the single largest remaining assumption:** whether
+`GetOpenFileNameW`'s own multi-name text parser accepts a *pasted*
+quoted multi-path string identically to how it accepts list-view-driven
+multi-selection. This is the step that actually determines whether the
+feature does anything useful even if every mechanical piece above works
+exactly as designed, and it could not be confirmed in this environment.
+Per the correction directive: this is stated plainly, not implied to be
+confirmed. Real Windows/JAWS testing of this exact behavior has not been
+claimed here and has not happened yet.
+
+### Diagnostics
+
+Extended to the exact fields requested: "Open dialog launched,"
+"Multi-select enabled," "CF_HDROP detected during paste," "Files
+contained in CF_HDROP," "File paths inserted/communicated to dialog,"
+"Native dialog returned," through the existing
+boundary/read/decoded/opened stages. Still collapsed, still on-demand,
+never auto-announced. If the command invocation itself fails, the panel
+now says so explicitly rather than silently keeping stale data, and the
+user gets a concise accessible alert rather than the silence 0.1.7
+produced.
+
 ## Recommended next phase
 
-Build 0.1.7 via GitHub Actions and, on real Windows, reproduce the exact
-workflow that surfaced this: select several audio files in File Explorer,
-Ctrl+C, switch to AccessibleAudioStudio Pro, activate Open Audio. No paste
-step is needed this time — the clipboard is checked automatically the
-moment Open Audio activates. Open the Open Audio Diagnostics panel
-immediately after: "Windows Shell clipboard file list detected" should say
-yes, and the file count should match what was actually copied. If it says
-no, or the count is wrong, that is a specific, actionable finding about
-the clipboard-reading code (most likely the one acknowledged uncertainty —
-`DragQueryFileW`'s exact buffer parameter shape) rather than a repeat of
-"picker returned 1." Also confirm the original 0.1.6 manual-browse dialog
-behavior (Ctrl+O with nothing relevant on the clipboard) is completely
-unchanged, and that document/window title, H1, skip links, footer, and
-landmark structure are all still correct. After multi-file intake is
-confirmed working for real via this workflow: a fair trial of the current
-document-switching combo box, then markers (Phase 6), since several
-editing operations here (set selection start/end, navigate by increment)
-already share the underlying mechanics markers will need.
+Build 0.1.8 via GitHub Actions and, on real Windows, reproduce the exact
+workflow: select several audio files in File Explorer, Ctrl+C, switch to
+AccessibleAudioStudio Pro, Ctrl+O. First confirm the native dialog actually
+appears — 0.1.7 regressed this specifically. Move to the File Name field
+and press Ctrl+V; whatever text (if any) appears there is itself useful
+information, independent of what happens next. Activate Open, then open
+the Open Audio Diagnostics panel: "CF_HDROP detected during paste" and
+"Files contained in CF_HDROP" will show definitively whether the paste
+interception ran, separate from whether `GetOpenFileNameW` actually
+accepted the resulting text as a real multi-selection — those are two
+different questions, and the diagnostics now separate them. If the
+interception never ran, the control-finding logic didn't work (the 0x47C
+ID, or the candidate-parent guessing, needs a different approach). If it
+ran but the dialog still returned only one file, `GetOpenFileNameW`'s
+own paste-driven multi-name parsing doesn't work the way its
+list-view-driven multi-select does, and that's a fundamentally different,
+harder problem worth discussing before attempting a seventh picker
+change. Also confirm plain Ctrl+O with nothing copied still opens the
+dialog and behaves exactly as in 0.1.6, and that document/window title,
+H1, skip links, footer, and landmark structure are all still correct.
+After multi-file intake is confirmed working for real via this workflow:
+a fair trial of the current document-switching combo box, then markers
+(Phase 6), since several editing operations here (set selection
+start/end, navigate by increment) already share the underlying mechanics
+markers will need.

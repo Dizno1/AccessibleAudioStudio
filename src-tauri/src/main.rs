@@ -22,15 +22,14 @@ struct PickedAudioFile {
 }
 
 /// Everything the frontend's Open Audio Diagnostics panel needs to show
-/// exactly how many files survived each stage, and — as of 0.1.7 —
-/// whether a copied Explorer selection was found on the clipboard and
-/// used directly, as distinct from the native dialog's own return value.
+/// exactly how many files survived each stage.
 #[derive(Serialize)]
 struct PickAudioFilesResult {
-    clipboard_file_list_detected: bool,
-    clipboard_file_count: usize,
+    dialog_launched: bool,
     win32_multi_select: bool,
-    dialog_returned_count: usize,
+    paste_hdrop_detected: bool,
+    paste_hdrop_file_count: usize,
+    paths_supplied_to_dialog: usize,
     native_dialog_count: usize,
     files: Vec<PickedAudioFile>,
     read_errors: Vec<String>,
@@ -41,78 +40,95 @@ struct PickAudioFilesResult {
 const FILE_BUFFER_LEN: usize = 65536;
 
 /// ---------------------------------------------------------------------
-/// Why 0.1.7 exists, and what it does and does not attempt
+/// 0.1.8: what changed, and why, read this before the code below
 /// ---------------------------------------------------------------------
 ///
-/// 0.1.6's diagnostics were read correctly, but the workflow that was
-/// actually tested was different from what every build through 0.1.6 had
-/// addressed: not "select multiple files directly inside the Open
-/// dialog," but "copy files in File Explorer (Ctrl+C), open the Open
-/// Audio dialog, paste into its File Name field (Ctrl+V), accept."
+/// 0.1.7 made Ctrl+O check the clipboard first and skip the dialog
+/// entirely when it found a multi-file copy — real testing found this
+/// produced no dialog, no files, and no announcement of any kind. That
+/// behavior is removed in 0.1.8. Ctrl+O and the Open Audio button now
+/// always call `pick_files_native()` and always show the native dialog,
+/// full stop, no exceptions, no clipboard inspection before it. (The
+/// most likely cause of 0.1.7's silent failure: a Rust panic inside the
+/// clipboard-reading path, before the dialog was ever shown, would
+/// abort that command invocation without ever resolving or rejecting the
+/// frontend's `invoke()` promise — matching "nothing happened, no
+/// announcement" exactly. Whether that specific theory is correct or
+/// not, removing the bypass removes the failure mode entirely rather
+/// than trying to patch around it.)
 ///
-/// That workflow cannot work by pasting text into the File Name field,
-/// as a matter of how Windows itself works, not as a bug in this app.
-/// Per Microsoft's own account of this exact question (Raymond Chen,
-/// "Windows Explorer Doesn't Do Text," Microsoft TechNet/Windows
-/// Confidential): when Explorer copies files to the clipboard, the data
-/// object it places there offers HDROP, file contents, and a file group
-/// descriptor — but never a text format. Pasting into any plain text
-/// field (which is what WM_PASTE — the message an edit control or combo
-/// box uses to handle Ctrl+V — requires: "Data is inserted only if the
-/// clipboard contains data in CF_UNICODETEXT format," per the WM_PASTE
-/// reference) cannot recover a multi-file list this way, because that
-/// list only ever exists on the clipboard as CF_HDROP, a binary format,
-/// never as text. This isn't specific to this app's dialog; it's true of
-/// any ordinary text field on Windows.
+/// What 0.1.8 adds instead is a live interception *inside* the dialog:
+/// when the user presses Ctrl+V in the File Name field, and the
+/// clipboard holds a copied multi-file Explorer selection (CF_HDROP,
+/// 2+ paths), that paste is intercepted and replaced with the complete
+/// list, expressed as a quoted, space-separated multi-name string —
+/// `"C:\path\a.mp3" "C:\path\b.wav"` — which is GetOpenFileNameW's own
+/// long-documented syntax for typing more than one filename directly
+/// into that field. The user stays in the dialog and activates Open
+/// normally; the existing, already-unit-tested
+/// `parse_multi_select_buffer` (unchanged since 0.1.6) then reads the
+/// result exactly as it would for any other multi-selection. If nothing
+/// relevant is on the clipboard, Ctrl+V behaves completely normally
+/// (default single-item paste).
 ///
-/// So the fix implemented here is not "make paste work inside the
-/// dialog" (which would require intercepting or subclassing a live
-/// native dialog window to catch WM_PASTE/paste-notification and read
-/// CF_HDROP at that moment — deliberately not attempted, see "What was
-/// deliberately not attempted" below). Instead: when Open Audio is
-/// activated, the Windows clipboard is checked first for a CF_HDROP
-/// file list (i.e., "did the user just copy files in Explorer?"). If
-/// two or more files are found there, they are used directly — the
-/// native dialog is never shown for that activation, so there's no
-/// paste step needed at all. If nothing usable is on the clipboard, the
-/// 0.1.6 GetOpenFileNameW dialog opens exactly as before, unchanged, for
-/// ordinary manual browsing and selection.
+/// ### How this works, mechanically
 ///
-/// The end-to-end user gesture that now works is: Explorer Ctrl+C,
-/// switch to AccessibleAudioStudio Pro, Ctrl+O — every copied file
-/// opens, with no dialog and no paste step at all. That is a different
-/// keystroke sequence than "open the dialog, then paste inside it," but
-/// it reaches the same result (the whole copied group opens) with fewer
-/// steps, through a mechanism this environment could reason about with
-/// real confidence rather than one that could not be attempted safely.
+/// 1. `pick_files_native()` sets `OFN_ENABLEHOOK` and `lpfnHook` to
+///    `open_dialog_hook_proc`, an Explorer-style OFNHookProc.
+/// 2. That hook does nothing for every message except one: on the
+///    `CDN_INITDONE` notification (sent once, when the dialog has
+///    finished laying itself out), it locates the File Name
+///    ComboBoxEx32 control — control ID `0x47C` (`cmb13` in Microsoft's
+///    own dialog-template naming, confirmed independently against a
+///    Microsoft MVP's description of this exact control hierarchy) —
+///    tries several plausible parent-window candidates defensively
+///    (the hook's own `hdlg` parameter, its `GetParent`, and the
+///    notification's `hwndFrom`, since which one is "correct" for this
+///    specific hook type could not be verified here), and if found,
+///    installs a window subclass (`SetWindowSubclass`) on it.
+/// 3. The subclass procedure (`paste_subclass_proc`) does nothing for
+///    every message except `WM_PASTE`. On that one message: if the
+///    clipboard holds 2+ files (via the same CF_HDROP reading logic
+///    0.1.7 introduced, factored out below as
+///    `read_clipboard_file_list`), it builds the quoted multi-name
+///    string and calls `SetWindowTextW` on the control directly instead
+///    of letting the default paste happen. Otherwise, it calls
+///    `DefSubclassProc` — ordinary default paste behavior, unchanged.
 ///
-/// ### What was deliberately not attempted, and why
+/// Every one of those steps is written to fail *silently and safely*:
+/// if the control can't be found, if subclassing fails, if the
+/// clipboard read fails, the code always falls through to leaving the
+/// dialog exactly as it would behave with no hook installed at all. The
+/// one thing this code must never do is turn a failure into a hang or a
+/// crash of the dialog itself — every branch that isn't the one
+/// deliberately-handled case returns control to Windows' own default
+/// processing immediately.
 ///
-/// Intercepting Ctrl+V *inside* the live native Open dialog (via
-/// OFN_ENABLEHOOK / lpfnHook, subclassing the File Name combo box, and
-/// reading CF_HDROP at the moment of paste) would reproduce the exact
-/// keystroke sequence originally described. It was not attempted here.
-/// Dialog hook procedures are widely documented as one of the more
-/// failure-prone corners of Win32 UI programming — a hook procedure that
-/// mishandles a message, deadlocks, or crashes can hang or corrupt the
-/// entire native dialog, not just fail to add the feature. Given this
-/// environment cannot compile, run, or test any of this app's
-/// Windows-specific code at all (confirmed directly, not assumed — see
-/// docs/Pro Roadmap.md for the details), shipping a hand-written dialog
-/// hook with zero ability to verify it wouldn't hang the dialog was
-/// judged too risky relative to the clipboard-on-activate approach
-/// above, which is simpler, uses well-documented standalone Win32 APIs
-/// (OpenClipboard/GetClipboardData/DragQueryFileW — the same functions
-/// any ordinary clipboard-reading utility uses), and cannot break the
-/// existing, working dialog path even if it has a bug: if clipboard
-/// reading fails or finds nothing, the code falls through to the
-/// unchanged 0.1.6 dialog behavior.
+/// ### What is and is not verified — read this before trusting this build
+///
+/// This is the deepest, least-verifiable Windows-specific code shipped
+/// in this project so far, and that should be stated plainly rather than
+/// smoothed over. Confirmed directly against Microsoft's own generated
+/// Rust API documentation: the `LPOFNHOOKPROC` function signature, the
+/// `OFNOTIFY`/`NMHDR` structure shapes, the `CDN_INITDONE` notification
+/// code, and the `SetWindowSubclass`/`DefSubclassProc` function
+/// signatures. Corroborated from an independent, real-world source (a
+/// Microsoft MVP's public description of the exact control nesting):
+/// the `0x47C` control ID and its three-level
+/// ComboBoxEx32→ComboBox→Edit structure. **Not verified, and not
+/// verifiable in this environment:** whether `GetOpenFileNameW`'s own
+/// multi-name text parser accepts a *pasted* quoted multi-path string
+/// identically to how it accepts list-view-driven multi-selection —
+/// this is the single largest remaining assumption, since it's the step
+/// that actually determines whether this feature does anything useful
+/// even if every mechanical piece above works exactly as designed. This
+/// environment cannot compile or run any Windows-specific code at all,
+/// confirmed directly across every build since 0.1.4 — that has not
+/// changed for 0.1.8.
 
 /// Reads a Windows Shell copied-file list (CF_HDROP) from the clipboard,
 /// if one is present. Returns None if the clipboard couldn't be opened,
-/// contains no CF_HDROP data, or the file list is empty — none of those
-/// are treated as errors, since "nothing usable on the clipboard" is the
-/// ordinary case whenever the user hasn't just copied files in Explorer.
+/// contains no CF_HDROP data, or the file list is empty.
 #[cfg(windows)]
 fn read_clipboard_file_list() -> Option<Vec<PathBuf>> {
     use windows::Win32::Foundation::HWND;
@@ -130,17 +146,8 @@ fn read_clipboard_file_list() -> Option<Vec<PathBuf>> {
             return None;
         }
 
-        // Always close the clipboard before returning, on every path —
-        // an application that leaves the clipboard open blocks every
-        // other program's clipboard access until it's closed.
         let result = (|| -> Option<Vec<PathBuf>> {
             let handle = GetClipboardData(CF_HDROP.0 as u32).ok()?;
-            // HANDLE and HDROP are both thin wrappers around *mut c_void
-            // (per the windows crate's own generated definitions) — the
-            // fix here is passing that raw pointer through directly,
-            // rather than the `as isize` cast this line previously used,
-            // which tried to construct HDROP from an integer instead of
-            // the pointer type its single field actually holds.
             let hdrop = windows::Win32::UI::Shell::HDROP(handle.0);
 
             let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
@@ -180,22 +187,153 @@ fn read_clipboard_file_list() -> Option<Vec<PathBuf>> {
     None
 }
 
-/// Shows Windows' classic Explorer-style multi-select "Open" dialog —
-/// `GetOpenFileNameW` with `OFN_EXPLORER | OFN_ALLOWMULTISELECT` — for
-/// ordinary manual file browsing and selection. Unchanged from 0.1.6.
-/// Returns an empty Vec if the user cancels — that is not an error.
+// Thread-local, not global, because GetOpenFileNameW blocks the calling
+// thread until the dialog closes, and its hook/subclass callbacks always
+// run on that same thread (window procedures never run cross-thread) —
+// so a plain thread-local cell is enough to pass diagnostics out of
+// callbacks that can't otherwise return data to pick_files_native().
 #[cfg(windows)]
-fn pick_files_native() -> Result<Vec<PathBuf>, String> {
+thread_local! {
+    static PASTE_DIAGNOSTICS: std::cell::RefCell<PasteDiagnostics> =
+        std::cell::RefCell::new(PasteDiagnostics::default());
+}
+
+#[cfg(windows)]
+#[derive(Default, Clone, Copy)]
+struct PasteDiagnostics {
+    hdrop_detected: bool,
+    hdrop_file_count: usize,
+}
+
+/// The File Name ComboBoxEx32 control's ID in an Explorer-style
+/// GetOpenFileName(W) dialog. Not officially documented by Microsoft,
+/// but consistently reported (including by a Microsoft MVP, describing
+/// the exact ComboBoxEx32 → ComboBox → Edit nesting used here) as
+/// `0x47C`, matching the classic dialog-template name `cmb13`.
+#[cfg(windows)]
+const FILENAME_COMBO_ID: i32 = 0x47C;
+
+#[cfg(windows)]
+const SUBCLASS_ID: usize = 0xAA51;
+
+/// Builds the quoted, space-separated multi-name string
+/// GetOpenFileNameW's own File Name field accepts for typing (or, as
+/// used here, pasting) more than one filename at once:
+/// `"C:\path\a.mp3" "C:\path\b.wav"`.
+#[cfg(windows)]
+fn build_quoted_multi_name(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| format!("\"{}\"", p.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Window subclass procedure installed on the File Name control. Handles
+/// exactly one message, WM_PASTE; every other message goes straight to
+/// `DefSubclassProc`, unmodified default behavior.
+#[cfg(windows)]
+unsafe extern "system" fn paste_subclass_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _subclass_id: usize,
+    _ref_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Controls::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::WM_PASTE;
+
+    if msg == WM_PASTE {
+        if let Some(paths) = read_clipboard_file_list() {
+            if paths.len() >= 2 {
+                PASTE_DIAGNOSTICS.with(|d| {
+                    let mut d = d.borrow_mut();
+                    d.hdrop_detected = true;
+                    d.hdrop_file_count = paths.len();
+                });
+
+                let text = build_quoted_multi_name(&paths);
+                let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+                use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                let _ = SetWindowTextW(hwnd, windows::core::PCWSTR(wide.as_ptr()));
+
+                // Handled — do not also run default paste behavior,
+                // which would otherwise insert the clipboard's own
+                // (single-name-at-best) text representation afterward.
+                return windows::Win32::Foundation::LRESULT(0);
+            }
+        }
+    }
+
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+/// OFNHookProc installed on the Open dialog. Handles exactly one
+/// notification, CDN_INITDONE (sent once, after the dialog has finished
+/// laying itself out); every other message returns 0 immediately,
+/// meaning "not handled, use default processing" — the standard,
+/// conservative return for an Explorer-style OFN hook.
+#[cfg(windows)]
+unsafe extern "system" fn open_dialog_hook_proc(
+    hdlg: windows::Win32::Foundation::HWND,
+    msg: u32,
+    _wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> usize {
+    use windows::Win32::UI::Controls::Dialogs::{CDN_INITDONE, OFNOTIFYW};
+    use windows::Win32::UI::Controls::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{GetDlgItem, GetParent, WM_NOTIFY};
+
+    if msg != WM_NOTIFY {
+        return 0;
+    }
+
+    let notify = &*(lparam.0 as *const OFNOTIFYW);
+    if notify.hdr.code != CDN_INITDONE.0 as isize {
+        return 0;
+    }
+
+    // Try every plausible "real dialog window" candidate defensively —
+    // which one is correct for this specific hook type was not possible
+    // to confirm in this environment. GetDlgItem simply returns a null
+    // handle for a wrong candidate; trying more than one costs nothing
+    // and only improves the odds of finding the real control.
+    let candidates = [hdlg, GetParent(hdlg).unwrap_or_default(), notify.hdr.hwndFrom];
+
+    for parent in candidates {
+        if parent == windows::Win32::Foundation::HWND::default() {
+            continue;
+        }
+        if let Ok(combo) = GetDlgItem(Some(parent), FILENAME_COMBO_ID) {
+            if combo != windows::Win32::Foundation::HWND::default() {
+                let _ = SetWindowSubclass(combo, Some(paste_subclass_proc), SUBCLASS_ID, 0);
+                break;
+            }
+        }
+    }
+
+    0
+}
+
+/// Shows Windows' classic Explorer-style multi-select "Open" dialog —
+/// `GetOpenFileNameW` with `OFN_EXPLORER | OFN_ALLOWMULTISELECT` — always,
+/// every time Open Audio is activated. See the module-level doc comment
+/// above for what the hook installed here does and why.
+#[cfg(windows)]
+fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
     use windows::core::PWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Controls::Dialogs::{
-        CommDlgExtendedError, GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER,
-        OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        CommDlgExtendedError, GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_ENABLEHOOK,
+        OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
 
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
+
+    PASTE_DIAGNOSTICS.with(|d| *d.borrow_mut() = PasteDiagnostics::default());
 
     let filter = to_wide("Audio\0*.wav;*.mp3;*.m4a;*.flac;*.ogg\0All Files\0*.*\0\0");
     let title = to_wide("Open Audio");
@@ -212,14 +350,18 @@ fn pick_files_native() -> Result<Vec<PathBuf>, String> {
         | OFN_ALLOWMULTISELECT
         | OFN_FILEMUSTEXIST
         | OFN_PATHMUSTEXIST
-        | OFN_HIDEREADONLY;
+        | OFN_HIDEREADONLY
+        | OFN_ENABLEHOOK;
+    ofn.lpfnHook = Some(open_dialog_hook_proc);
 
     let succeeded = unsafe { GetOpenFileNameW(&mut ofn) };
+
+    let diagnostics = PASTE_DIAGNOSTICS.with(|d| *d.borrow());
 
     if !succeeded.as_bool() {
         let error_code = unsafe { CommDlgExtendedError() };
         if error_code.0 == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), diagnostics));
         }
         return Err(format!(
             "GetOpenFileNameW failed (CommDlgExtendedError code {}).",
@@ -227,14 +369,12 @@ fn pick_files_native() -> Result<Vec<PathBuf>, String> {
         ));
     }
 
-    Ok(parse_multi_select_buffer(&file_buffer))
+    Ok((parse_multi_select_buffer(&file_buffer), diagnostics))
 }
 
 /// Parses the Explorer-style multi-select return buffer into a list of
-/// complete file paths. See 0.1.6's changelog entry in
-/// docs/Pro Roadmap.md for the unit tests this exact logic was run
-/// against (real rustc, including the exact 15-file case from real
-/// testing) before being included in that build; unchanged since.
+/// complete file paths. Unit-tested (real rustc, not simulated) since
+/// 0.1.6 — see docs/Pro Roadmap.md — and unchanged since.
 #[cfg(windows)]
 fn parse_multi_select_buffer(buffer: &[u16]) -> Vec<PathBuf> {
     let mut strings: Vec<String> = Vec::new();
@@ -260,40 +400,25 @@ fn parse_multi_select_buffer(buffer: &[u16]) -> Vec<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn pick_files_native() -> Result<Vec<PathBuf>, String> {
+fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
     Err("Windows-native multi-select is only available on Windows.".to_string())
 }
 
-/// Checks the clipboard for a copied Explorer file list first; if two or
-/// more files are found there, uses them directly and never shows the
-/// dialog. Otherwise shows the native multi-select Open dialog exactly
-/// as in 0.1.6. Either way, reads every resulting file's bytes on the
-/// Rust side in one round trip. A file that fails to read is recorded in
-/// `read_errors` rather than aborting the whole selection.
+#[cfg(not(windows))]
+#[derive(Default, Clone, Copy)]
+struct PasteDiagnostics {
+    hdrop_detected: bool,
+    hdrop_file_count: usize,
+}
+
+/// Always shows the native multi-select Open dialog, then reads every
+/// resulting file's bytes on the Rust side in one round trip. A file
+/// that fails to read is recorded in `read_errors` rather than aborting
+/// the whole selection.
 #[tauri::command]
 async fn pick_and_read_audio_files() -> Result<PickAudioFilesResult, String> {
-    let clipboard_files = read_clipboard_file_list();
-    let clipboard_file_count = clipboard_files.as_ref().map(|v| v.len()).unwrap_or(0);
-
-    // Only take the clipboard path for a genuine multi-file copy. A
-    // single copied file is not meaningfully faster via this path than
-    // just using the dialog, and treating single and multi differently
-    // here keeps the common case (nothing relevant copied, or one file
-    // copied) from ever silently skipping the dialog the user expects.
-    let (paths, used_clipboard, dialog_returned_count) =
-        if clipboard_file_count >= 2 {
-            (clipboard_files.unwrap(), true, 0usize)
-        } else {
-            let dialog_paths = pick_files_native()?;
-            let count = dialog_paths.len();
-            (dialog_paths, false, count)
-        };
-
-    let native_dialog_count = if used_clipboard {
-        clipboard_file_count
-    } else {
-        dialog_returned_count
-    };
+    let (paths, paste_diagnostics) = pick_files_native()?;
+    let native_dialog_count = paths.len();
 
     let mut files = Vec::with_capacity(paths.len());
     let mut read_errors = Vec::new();
@@ -319,10 +444,11 @@ async fn pick_and_read_audio_files() -> Result<PickAudioFilesResult, String> {
     }
 
     Ok(PickAudioFilesResult {
-        clipboard_file_list_detected: used_clipboard,
-        clipboard_file_count,
+        dialog_launched: true,
         win32_multi_select: cfg!(windows),
-        dialog_returned_count,
+        paste_hdrop_detected: paste_diagnostics.hdrop_detected,
+        paste_hdrop_file_count: paste_diagnostics.hdrop_file_count,
+        paths_supplied_to_dialog: paste_diagnostics.hdrop_file_count,
         native_dialog_count,
         files,
         read_errors,

@@ -132,7 +132,7 @@ AccessibleAudioStudio's browser-based application (`index.html` and `app/`) is p
 
 `.github/workflows/build-windows.yml` builds the real installers on a genuine Windows machine (a GitHub-hosted `windows-latest` runner) automatically:
 
-- **Push a Pro version tag** (e.g. `git tag pro-v0.1.7 && git push origin pro-v0.1.7`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
+- **Push a Pro version tag** (e.g. `git tag pro-v0.1.8 && git push origin pro-v0.1.8`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
 - **Or run it manually** from the Actions tab ("Build Windows Installer" > "Run workflow") to just build and download the installers as workflow artifacts, without creating a release -- useful while testing a change.
 
 This is a real build on a real Windows machine every time -- not a simulation. See `Release/README.md` for the full step-by-step.
@@ -222,9 +222,9 @@ These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`;
 | Tauri identifier | `org.opendoordesign.accessibleaudiostudio` | `org.opendoordesign.accessibleaudiostudio.pro` |
 | Cargo/package name | `accessibleaudiostudio` | `accessibleaudiostudio-pro` |
 | Window title | AccessibleAudioStudio | AccessibleAudioStudio Pro |
-| Version | 1.0.0 | 0.1.7 (current test build — see "Pro version numbering" below) |
+| Version | 1.0.0 | 0.1.8 (current test build — see "Pro version numbering" below) |
 
-#### Native file dialog (since 0.1.2; five different implementations/additions through 0.1.7)
+#### Native file dialog (since 0.1.2; six different implementations/additions through 0.1.8)
 
 "Open Audio" in the packaged desktop app opens the real native Windows
 file picker, instead of relying solely on an HTML `<input type="file"
@@ -290,6 +290,31 @@ previous attempt's own diagnostics actually proved, not a guess:
   attempted (hooking the live dialog to intercept paste in place) and
   why. `windows` crate features `Win32_UI_Shell`, `Win32_System_DataExchange`,
   and `Win32_System_Ole` added for this.
+- **0.1.8** — real testing of 0.1.7 found the clipboard-bypass approach
+  produced no dialog at all and no feedback of any kind (most likely a
+  Rust panic inside the clipboard-reading path, before the dialog was
+  ever shown, silently hanging the frontend's `invoke()` call forever —
+  the same class of failure a Windows compiler could have caught, that
+  this environment cannot). That bypass is removed entirely: Ctrl+O and
+  the Open Audio button always call `pick_files_native()` and always
+  show the dialog, unconditionally. In its place, 0.1.8 attempts the
+  approach 0.1.7 had deliberately avoided: a live dialog hook
+  (`OFN_ENABLEHOOK`/`lpfnHook`) installs a window subclass on the File
+  Name control (`ComboBoxEx32`, control ID `0x47C`) that intercepts
+  `WM_PASTE` directly. When Ctrl+V is pressed with a copied Explorer
+  selection on the clipboard, the intercepted paste is replaced with a
+  quoted multi-name string — `"C:\path\a.mp3" "C:\path\b.wav"` — which
+  is `GetOpenFileNameW`'s own long-documented syntax for typing more
+  than one filename, so the existing, unit-tested
+  `parse_multi_select_buffer` needed no changes at all to read the
+  result. Every layer of this — hook installation, finding the control,
+  subclassing it — is written to fail silently back to completely normal
+  dialog behavior rather than risk breaking the dialog itself; see the
+  extensive doc comment at the top of `src-tauri/src/main.rs`, and
+  `docs/Pro Roadmap.md`, for the full mechanism and — importantly — an
+  honest account of what could and couldn't be verified about it in this
+  environment. `windows` crate features `Win32_UI_Controls` and
+  `Win32_UI_WindowsAndMessaging` added for this.
 
 #### Pro version numbering
 
@@ -307,7 +332,8 @@ same reason: it lets a bug report like "this happened in 0.1.3 but not
 - `0.1.5` — replaced `tauri-plugin-dialog` entirely with a direct native Windows `IFileOpenDialog` call (0.1.4's diagnostics proved the loss was inside that plugin's own Windows backend, not this app's code), extended diagnostics further, and added a real error path instead of a silent fallback — see `docs/Pro Roadmap.md`
 - `0.1.6` — switched to a genuinely different class of Windows API (`GetOpenFileNameW`/`OFN_ALLOWMULTISELECT`, not another `IFileOpenDialog`-based approach) after 0.1.5's diagnostics reported the identical one-file symptom for a second, independently-implemented multi-select API — see `docs/Pro Roadmap.md`
 - `0.1.7` — added Windows Shell clipboard (`CF_HDROP`) detection for the "copy files in Explorer, switch to this app, Open Audio" workflow, after real testing showed the specific "paste inside the dialog" gesture can't work by Windows' own design (Explorer's multi-file copy never places a text clipboard format) — see `docs/Pro Roadmap.md`
-- `0.1.8`, … — subsequent test/fix builds
+- `0.1.8` — removed 0.1.7's clipboard-bypass-before-the-dialog (real testing found it produced no dialog and no feedback); replaced it with a live paste interception installed inside the native dialog itself, so Ctrl+O always opens the dialog and Ctrl+V inside it now expands a copied Explorer file list — see `docs/Pro Roadmap.md`
+- `0.1.9`, … — subsequent test/fix builds
 - `0.2.0` — a meaningful new feature milestone (e.g. markers)
 - eventually `1.0.0` — first production Pro release
 
@@ -328,15 +354,15 @@ place to remember to update.
 
 ## GitHub Releases
 
-Pushing a Pro version tag (`git tag pro-v0.1.7 && git push origin pro-v0.1.7`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
+Pushing a Pro version tag (`git tag pro-v0.1.8 && git push origin pro-v0.1.8`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
 
 1. After the workflow finishes, open the draft release on GitHub (Releases tab).
-2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.7 (Windows)," and adjust if needed.
+2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.8 (Windows)," and adjust if needed.
 3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing. If the free AccessibleAudioStudio is also installed on that machine, confirm both apps still work independently afterward.
 4. Write release notes covering what's new or changed since the last Pro build, any known issues, and which Windows versions were tested.
 5. Publish the release. Keep every previous release's assets attached to its own tagged release rather than overwriting them, so there's a complete version history to link back to or roll back to if needed.
-6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.7/AccessibleAudioStudio Pro_0.1.7_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
+6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.8/AccessibleAudioStudio Pro_0.1.8_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
 
 ## Recommended next phase
 
-Build 0.1.7 via GitHub Actions — this environment has no Rust toolchain that can target Windows (confirmed by direct attempt; see `docs/Pro Roadmap.md`), so this genuinely needs a real Windows build. Reproduce the exact workflow that found the issue: select several audio files in File Explorer, Ctrl+C, switch to AccessibleAudioStudio Pro, activate Open Audio (Ctrl+O or the button) — no paste step needed this time, since the clipboard is now checked automatically. Open the Open Audio Diagnostics panel afterward: "Windows Shell clipboard file list detected" should say yes, and "Files present in Windows Shell clipboard" should match the real copied count. If it says "no" or the count is 0 despite files genuinely having been copied, that's a real, specific finding about the clipboard-reading code — report the exact diagnostics text. Also confirm the original 0.1.6 dialog behavior (manual Ctrl+O with nothing copied, browsing and selecting files directly) is unchanged, and that nothing from the accessibility work in 0.1.2 (H1, skip links, footer, landmark structure, document/window title) regressed. See `docs/Pro Roadmap.md` for the full history, including what was deliberately not attempted (a live dialog-paste hook) and why. After multi-file opening is confirmed working for real: a fair trial of the current document-switching combo box, then markers (Phase 6).
+Build 0.1.8 via GitHub Actions — this environment has no Rust toolchain that can target Windows (confirmed by direct attempt; see `docs/Pro Roadmap.md`), so this genuinely needs a real Windows build, and this is the deepest, least-verifiable Windows-specific change shipped in this project so far. Reproduce the exact workflow: select several audio files in File Explorer, Ctrl+C, switch to AccessibleAudioStudio Pro, Ctrl+O — confirm the native Open dialog actually appears this time (0.1.7 regressed this). Move to the File Name field, Ctrl+V, and see what happens: ideally the field fills with a quoted multi-file list rather than one plain filename. Whatever happens, activate Open and open the Open Audio Diagnostics panel afterward — "CF_HDROP detected during paste" and "Files contained in CF_HDROP" will show definitively whether the paste interception ran at all, separate from whether `GetOpenFileNameW` itself accepted the resulting text as a real multi-selection. Also confirm plain Ctrl+O with nothing copied still opens the dialog and works exactly as in 0.1.6, and that nothing from the accessibility work in 0.1.2 (H1, skip links, footer, landmark structure, document/window title) regressed. See `docs/Pro Roadmap.md` for the full mechanism and an honest account of what could and couldn't be verified. After multi-file opening is confirmed working for real: a fair trial of the current document-switching combo box, then markers (Phase 6).

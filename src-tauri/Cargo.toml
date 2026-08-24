@@ -1,6 +1,6 @@
 [package]
 name = "accessibleaudiostudio-pro"
-version = "0.1.7"
+version = "0.1.8"
 description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
@@ -19,20 +19,24 @@ rust-version = "1.77.2"
 # Windows treating a Pro test build as an upgrade of, or collision with, the
 # published free edition.
 #
-# windows (0.1.6, extended 0.1.7): "Open Audio" shows Windows' classic
-# Explorer-style multi-select "Open" dialog via the plain, non-COM
+# windows (0.1.6, extended 0.1.7/0.1.8): "Open Audio" always shows Windows'
+# classic Explorer-style multi-select "Open" dialog via the plain, non-COM
 # GetOpenFileNameW API (OFN_EXPLORER | OFN_ALLOWMULTISELECT) — see
-# pick_files_native in src/main.rs. 0.1.7 added a second mechanism ahead
-# of that dialog: read_clipboard_file_list reads a Windows Shell copied
-# file list (CF_HDROP, via OpenClipboard/GetClipboardData/DragQueryFileW)
-# when Open Audio is activated, for the "copy files in Explorer, switch
-# to this app, Open Audio" workflow — pasting that copied selection into
-# the dialog's own File Name field cannot work by design (Explorer's
-# multi-file copy never places a text clipboard format, only CF_HDROP;
-# see the doc comment on read_clipboard_file_list in src/main.rs for the
-# full explanation and source). Feature Win32_UI_Shell added for
-# DragQueryFileW; Win32_System_DataExchange for the clipboard functions;
-# Win32_System_Ole for the CF_HDROP constant.
+# pick_files_native in src/main.rs. 0.1.7's clipboard-bypass-before-the-
+# dialog approach was removed in 0.1.8 after real testing found it produced
+# no dialog and no feedback at all; in its place, 0.1.8 installs a dialog
+# hook (OFN_ENABLEHOOK/lpfnHook) and a window subclass on the File Name
+# control to intercept Ctrl+V live, inside the dialog, and expand a copied
+# Explorer file list (CF_HDROP) into the quoted multi-name text
+# GetOpenFileNameW's own field already knows how to parse — see the
+# extensive doc comment at the top of src/main.rs for the full mechanism,
+# and for what is and is not verified about it. Features added for this:
+# Win32_UI_WindowsAndMessaging (GetDlgItem, GetParent, WM_NOTIFY, WM_PASTE,
+# SetWindowTextW) and Win32_UI_Controls (NMHDR, SetWindowSubclass,
+# DefSubclassProc). Win32_UI_Shell, Win32_System_DataExchange, and
+# Win32_System_Ole remain from 0.1.7's clipboard-reading code, which 0.1.8
+# still uses — now from inside the paste interception instead of before
+# the dialog.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -43,16 +47,19 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Windows-only: the native "Open Audio" picker and clipboard file-list
-# detection (see pick_files_native and read_clipboard_file_list in
-# src/main.rs). Not needed on other platforms, so it's scoped to the
+# Windows-only: the native "Open Audio" picker, its live paste
+# interception, and clipboard file-list reading (see pick_files_native,
+# open_dialog_hook_proc, paste_subclass_proc, and read_clipboard_file_list
+# in src/main.rs). Not needed on other platforms, so it's scoped to the
 # windows target rather than pulled in unconditionally.
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
 features = [
   "Win32_Foundation",
+  "Win32_UI_Controls",
   "Win32_UI_Controls_Dialogs",
   "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
   "Win32_System_DataExchange",
   "Win32_System_Ole",
 ]
