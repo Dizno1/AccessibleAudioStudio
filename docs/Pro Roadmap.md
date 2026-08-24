@@ -671,6 +671,39 @@ boundary/read/decoded/opened stages — a simple rename from 0.1.5's
 wording, not a structural change, so the panel's behavior (collapsed,
 on-demand, never auto-announced) is unchanged.
 
+### Compile fix (same 0.1.7, no version change)
+
+The first real GitHub Actions Windows build of this code failed —
+genuinely useful news, since it's the first time this specific code
+reached an actual Windows compiler at all, and the failure was a precise,
+fixable type error rather than another silent runtime mismatch. The
+compiler reported:
+
+> error[E0308]: mismatched types
+> expected `*mut c_void`, found `HDROP`
+
+in `read_clipboard_file_list`, at the line constructing the `HDROP`
+wrapper from `GetClipboardData`'s return value. The bug: `HDROP(handle.0
+as isize)` — casting the pointer to an integer (`isize`) before passing
+it to `HDROP`'s constructor, which the `windows` crate defines as `pub
+struct HDROP(pub *mut c_void)` — a pointer field, not an integer one.
+`HANDLE` (what `GetClipboardData` returns) is defined identically, `pub
+struct HANDLE(pub *mut c_void)` — confirmed directly, not assumed — so
+`handle.0` is already the exact pointer type `HDROP` needs. Fixed by
+removing the stray cast: `HDROP(handle.0)`, a direct, type-correct
+field-for-field construction.
+
+This was exactly the kind of narrow, mechanical error a real compiler
+catches immediately and this environment's inability to compile
+Windows-target code could not — the acknowledged uncertainty flagged for
+this function when 0.1.7 was written was about `DragQueryFileW`'s buffer
+parameter shape, not this particular pointer/integer mix-up, which is a
+reminder that "confirmed against documentation" and "confirmed by a
+compiler" are genuinely different confidence levels, not interchangeable
+ones. Nothing else in the file was touched: the diff between this
+correction and the submitted 0.1.7 is exactly one line changed, one
+explanatory comment added.
+
 ## 0.1.7 — the workflow was different than every prior build assumed
 
 0.1.6's diagnostics were read correctly on real Windows, but the actual

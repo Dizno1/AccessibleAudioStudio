@@ -135,7 +135,13 @@ fn read_clipboard_file_list() -> Option<Vec<PathBuf>> {
         // other program's clipboard access until it's closed.
         let result = (|| -> Option<Vec<PathBuf>> {
             let handle = GetClipboardData(CF_HDROP.0 as u32).ok()?;
-            let hdrop = windows::Win32::UI::Shell::HDROP(handle.0 as isize);
+            // HANDLE and HDROP are both thin wrappers around *mut c_void
+            // (per the windows crate's own generated definitions) — the
+            // fix here is passing that raw pointer through directly,
+            // rather than the `as isize` cast this line previously used,
+            // which tried to construct HDROP from an integer instead of
+            // the pointer type its single field actually holds.
+            let hdrop = windows::Win32::UI::Shell::HDROP(handle.0);
 
             let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
             if count == 0 {
