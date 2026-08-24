@@ -132,7 +132,7 @@ AccessibleAudioStudio's browser-based application (`index.html` and `app/`) is p
 
 `.github/workflows/build-windows.yml` builds the real installers on a genuine Windows machine (a GitHub-hosted `windows-latest` runner) automatically:
 
-- **Push a Pro version tag** (e.g. `git tag pro-v0.1.5 && git push origin pro-v0.1.5`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
+- **Push a Pro version tag** (e.g. `git tag pro-v0.1.6 && git push origin pro-v0.1.6`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
 - **Or run it manually** from the Actions tab ("Build Windows Installer" > "Run workflow") to just build and download the installers as workflow artifacts, without creating a release -- useful while testing a change.
 
 This is a real build on a real Windows machine every time -- not a simulation. See `Release/README.md` for the full step-by-step.
@@ -222,9 +222,9 @@ These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`;
 | Tauri identifier | `org.opendoordesign.accessibleaudiostudio` | `org.opendoordesign.accessibleaudiostudio.pro` |
 | Cargo/package name | `accessibleaudiostudio` | `accessibleaudiostudio-pro` |
 | Window title | AccessibleAudioStudio | AccessibleAudioStudio Pro |
-| Version | 1.0.0 | 0.1.5 (current test build — see "Pro version numbering" below) |
+| Version | 1.0.0 | 0.1.6 (current test build — see "Pro version numbering" below) |
 
-#### Native file dialog (since 0.1.2; rebuilt in Rust in 0.1.4; switched off tauri-plugin-dialog entirely in 0.1.5)
+#### Native file dialog (since 0.1.2; four different implementations through 0.1.6)
 
 "Open Audio" in the packaged desktop app opens the real native Windows
 file picker, instead of relying solely on an HTML `<input type="file"
@@ -232,7 +232,7 @@ multiple">` — the HTML input remains only as a fallback for when this
 same app is run as a plain web page with no Tauri runtime present (e.g.
 GitHub Pages).
 
-This took three tries to get right, and each one was grounded in what the
+This took four tries to get right, and each one was grounded in what the
 previous attempt's own diagnostics actually proved, not a guess:
 
 - **0.1.2/0.1.3** called `window.__TAURI__.dialog.open({ multiple: true
@@ -247,20 +247,28 @@ previous attempt's own diagnostics actually proved, not a guess:
   matching it — proof the loss was inside `tauri-plugin-dialog`'s own
   Windows dialog backend, not anywhere in this app.
 - **0.1.5** stopped using `tauri-plugin-dialog` for this function
-  altogether. `pick_and_read_audio_files` (see `src-tauri/src/main.rs`)
-  now calls Windows' own `IFileOpenDialog` COM API with
-  `FOS_ALLOWMULTISELECT` directly, via the small, Windows-only `wfd`
-  crate — the same underlying API Explorer and Audacity themselves use —
-  and reads every selected file's bytes with `std::fs::read`, all in one
-  Rust command. The frontend calls this one command via
-  `window.__TAURI__.core.invoke(...)` and gets back a plain array of
-  `{ name, path, data }` objects — see `app/js/audioEditorController.js`.
-  `tauri-plugin-dialog` and `tauri-plugin-fs` are no longer dependencies
-  at all. `app.withGlobalTauri` remains `true` in `tauri.conf.json`,
-  since `window.__TAURI__.core.invoke` still needs it. `wfd` is
-  Windows-only (`[target.'cfg(windows)'.dependencies]` in
-  `src-tauri/Cargo.toml`); Cargo fetches it automatically on the next
-  Windows build, no separate install step needed.
+  altogether, calling Windows' modern `IFileOpenDialog` COM API with
+  `FOS_ALLOWMULTISELECT` directly via the small, Windows-only `wfd`
+  crate. Real Windows testing reported exactly the same symptom a third
+  time — proof this wasn't specific to `tauri-plugin-dialog`, since `wfd`
+  is an independent implementation of a different (if related) API.
+- **0.1.6** switched to a genuinely different *class* of Windows API:
+  `GetOpenFileNameW` with `OFN_EXPLORER | OFN_ALLOWMULTISELECT` (see
+  `pick_files_native` in `src-tauri/src/main.rs`) — the classic, non-COM
+  Common Dialog Box Library mechanism, rather than a third variation on
+  `IFileOpenDialog`. This is the same class of API Audacity's own Windows
+  build uses for this exact dialog. Selected files come back from Windows
+  as one buffer of NULL-separated strings terminated by a double-NULL —
+  parsed by `parse_multi_select_buffer`, which was unit-tested in
+  isolation (real `rustc`, not simulated) against the single-file case,
+  the multi-file case, cancellation, filenames containing spaces, and the
+  exact 15-file selection from real testing, before being included here.
+  `wfd` is no longer a dependency; the `windows` crate
+  (`Win32_UI_Controls_Dialogs` feature) is used instead, scoped to
+  `[target.'cfg(windows)'.dependencies]` in `src-tauri/Cargo.toml` since
+  this app only ships as Windows installers. `app.withGlobalTauri` remains
+  `true` in `tauri.conf.json`, since the frontend still calls this one
+  command via `window.__TAURI__.core.invoke(...)`.
 
 #### Pro version numbering
 
@@ -276,7 +284,8 @@ same reason: it lets a bug report like "this happened in 0.1.3 but not
 - `0.1.3` — diagnostic instrumentation for the Open Audio pipeline (0.1.2's fix still wasn't confirmed working on real Windows), a real document-title bug fix, and hardened per-file dialog-result handling — see `docs/Pro Roadmap.md`
 - `0.1.4` — moved native file picking and file reading entirely into Rust (0.1.3's diagnostics proved the JS-side dialog call itself was the point of loss, not this app's file-processing code), removed the now-unused fs plugin dependency, and extended the diagnostics panel — see `docs/Pro Roadmap.md`
 - `0.1.5` — replaced `tauri-plugin-dialog` entirely with a direct native Windows `IFileOpenDialog` call (0.1.4's diagnostics proved the loss was inside that plugin's own Windows backend, not this app's code), extended diagnostics further, and added a real error path instead of a silent fallback — see `docs/Pro Roadmap.md`
-- `0.1.6`, … — subsequent test/fix builds
+- `0.1.6` — switched to a genuinely different class of Windows API (`GetOpenFileNameW`/`OFN_ALLOWMULTISELECT`, not another `IFileOpenDialog`-based approach) after 0.1.5's diagnostics reported the identical one-file symptom for a second, independently-implemented multi-select API — see `docs/Pro Roadmap.md`
+- `0.1.7`, … — subsequent test/fix builds
 - `0.2.0` — a meaningful new feature milestone (e.g. markers)
 - eventually `1.0.0` — first production Pro release
 
@@ -297,15 +306,15 @@ place to remember to update.
 
 ## GitHub Releases
 
-Pushing a Pro version tag (`git tag pro-v0.1.5 && git push origin pro-v0.1.5`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
+Pushing a Pro version tag (`git tag pro-v0.1.6 && git push origin pro-v0.1.6`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
 
 1. After the workflow finishes, open the draft release on GitHub (Releases tab).
-2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.5 (Windows)," and adjust if needed.
+2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.6 (Windows)," and adjust if needed.
 3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing. If the free AccessibleAudioStudio is also installed on that machine, confirm both apps still work independently afterward.
 4. Write release notes covering what's new or changed since the last Pro build, any known issues, and which Windows versions were tested.
 5. Publish the release. Keep every previous release's assets attached to its own tagged release rather than overwriting them, so there's a complete version history to link back to or roll back to if needed.
-6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.5/AccessibleAudioStudio Pro_0.1.5_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
+6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.6/AccessibleAudioStudio Pro_0.1.6_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
 
 ## Recommended next phase
 
-Build 0.1.5 via GitHub Actions — this environment has no Rust toolchain (confirmed by direct attempt; see `docs/Pro Roadmap.md`), so this genuinely needs a real Windows build, and this build's central change (a new Windows-only crate calling `IFileOpenDialog` directly) is completely unverified until it compiles and runs there. Before anything else: select several files in one Open Audio operation and open the Open Audio Diagnostics panel in the footer immediately after. "Windows picker returned" is now the critical number, coming from a call that no longer touches `tauri-plugin-dialog` at all — the component 0.1.4's diagnostics implicated. If it still reports 1 regardless of selection size, that's strong evidence the issue is even lower-level (the underlying Windows shell/COM behavior on this specific machine), and worth a completely different kind of investigation than another code change. If it reports the real count, confirm every later stage matches through to "Documents opened," and confirm nothing from 0.1.2's standards pass (H1, skip links, footer, landmark structure) or the document/window title fix regressed. See `docs/Pro Roadmap.md` for the full history. After multi-file opening is confirmed working for real: a fair trial of the current document-switching combo box, then markers (Phase 6).
+Build 0.1.6 via GitHub Actions — this environment has no Rust toolchain that can target Windows (confirmed by direct attempt; see `docs/Pro Roadmap.md` for exactly what was and wasn't possible to verify here), so this genuinely needs a real Windows build. Before anything else: select several files in one Open Audio operation and open the Open Audio Diagnostics panel in the footer immediately after. "Win32 picker returned" is the number that matters: it now comes from `GetOpenFileNameW`, a fundamentally different, non-COM Windows API than either of the two COM-based approaches that both reported exactly one file in 0.1.4 and 0.1.5. If it still reports 1 regardless of selection size, that would mean three independently-implemented Windows multi-select mechanisms all failed identically on this machine — genuinely unusual, and worth investigating outside this app's code entirely (a shell extension, security software, or a machine-specific policy affecting file dialogs generally) rather than a fourth picker implementation. If it reports the real count, confirm every later stage matches through to "Documents opened," and confirm nothing from the accessibility work in 0.1.2 (H1, skip links, footer, landmark structure, document/window title) regressed. See `docs/Pro Roadmap.md` for the full history. After multi-file opening is confirmed working for real: a fair trial of the current document-switching combo box, then markers (Phase 6).

@@ -262,7 +262,7 @@ async function openAudioViaTauriCommand() {
 
     await processOpenedFiles(files, {
       pathway: "windows-native",
-      windowsNativeMultiSelect: result.windows_native_multi_select,
+      win32MultiSelect: result.win32_multi_select,
       nativeDialogCount: result.native_dialog_count,
       boundaryCount: result.files.length + result.read_errors.length,
       readFailedCount: result.read_errors.length,
@@ -273,7 +273,7 @@ async function openAudioViaTauriCommand() {
     // plainly rather than staying on whatever it last reported.
     updateOpenAudioDiagnostics({
       pathway: "windows-native",
-      windowsNativeMultiSelect: true,
+      win32MultiSelect: true,
       nativeDialogCount: 0,
       boundaryCount: 0,
       jsReceivedCount: 0,
@@ -297,7 +297,7 @@ async function handleOpenAudioInputChange() {
   if (!files || files.length === 0) return;
   await processOpenedFiles(Array.from(files), {
     pathway: "browser-input",
-    windowsNativeMultiSelect: false,
+    win32MultiSelect: false,
     nativeDialogCount: null,
     boundaryCount: null,
     readFailedCount: 0,
@@ -337,7 +337,7 @@ async function processOpenedFiles(fileArray, meta) {
 
   updateOpenAudioDiagnostics({
     pathway: meta.pathway,
-    windowsNativeMultiSelect: meta.windowsNativeMultiSelect,
+    win32MultiSelect: meta.win32MultiSelect,
     nativeDialogCount: meta.nativeDialogCount,
     boundaryCount: meta.boundaryCount,
     jsReceivedCount,
@@ -902,21 +902,22 @@ function updateOpenAudioDiagnostics(stats) {
   const isWindowsNativePathway = stats.pathway === "windows-native";
 
   const multiSelectLine = isWindowsNativePathway
-    ? `Windows native multi-select requested: ${stats.windowsNativeMultiSelect ? "yes" : "no"}.`
-    : "Windows native multi-select requested: not applicable (browser file picker used).";
+    ? `Win32 multi-select requested: ${stats.win32MultiSelect ? "yes" : "no"}.`
+    : "Win32 multi-select requested: not applicable (browser file picker used).";
 
   const nativeLine = isWindowsNativePathway
-    ? `Windows picker returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
-    : "Windows picker: not applicable.";
+    ? `Win32 picker returned: ${stats.nativeDialogCount} file${stats.nativeDialogCount === 1 ? "" : "s"}.`
+    : "Win32 picker: not applicable.";
 
-  // As of 0.1.5, picking (via the wfd crate's native Windows dialog) and
-  // reading both happen in one Rust command before anything crosses back
-  // to JavaScript — so "passed across the Rust/Tauri boundary" and "read
-  // successfully" are reported from the same single IPC response, not
-  // from two separate round trips a different architecture might use.
-  // Both are still reported as distinct numbers so a mismatch between
-  // them (something lost during Rust-side reading, or during IPC
-  // serialization back to JS) stays visible either way.
+  // As of 0.1.6, picking (via GetOpenFileNameW, Windows' classic
+  // Explorer-style multi-select dialog) and reading both happen in one
+  // Rust command before anything crosses back to JavaScript — so "passed
+  // across the Rust/Tauri boundary" and "read successfully" are reported
+  // from the same single IPC response, not from two separate round trips
+  // a different architecture might use. Both are still reported as
+  // distinct numbers so a mismatch between them (something lost during
+  // Rust-side reading, or during IPC serialization back to JS) stays
+  // visible either way.
   const boundaryLine = isWindowsNativePathway
     ? `Passed across Rust/Tauri boundary: ${stats.boundaryCount} file${stats.boundaryCount === 1 ? "" : "s"}.`
     : "Rust/Tauri boundary: not applicable.";

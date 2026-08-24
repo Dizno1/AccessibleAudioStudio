@@ -575,22 +575,119 @@ structure, the Open Door Design footer, approved design tokens, and the
 free recording workflow are all unchanged in this build — none of the
 files that implement them were touched.
 
+## 0.1.6 — a genuinely different class of Windows API, with real unit-tested logic
+
+0.1.5's diagnostics reported the identical symptom a third time:
+
+> Windows native multi-select requested: yes.
+> Native dialog returned: 1 file.
+> Passed across the Rust/Tauri boundary: 1 file.
+> Files read successfully: 1 of 1.
+> Received in JavaScript: 1 file.
+> Supported audio files: 1.
+> Files decoded: 1.
+> Documents opened: 1.
+
+Two independently-implemented multi-select APIs — `tauri-plugin-dialog`
+(0.1.2–0.1.4) and `wfd`/`IFileOpenDialog` (0.1.5) — had now both returned
+exactly one file regardless of selection size, with every downstream
+stage proven clean both times. Per the correction directive for this
+build: no changes to the editor, decoding, document creation, JS
+processing, recording, playback, Recording Library, duplicate protection,
+or document switching — none of those were touched, since 0.1.5's own
+diagnostics had already exonerated all of them for a second time.
+
+### What changed
+
+`pick_files_native` (`src-tauri/src/main.rs`) now calls `GetOpenFileNameW`
+with `OFN_EXPLORER | OFN_ALLOWMULTISELECT` — the classic, non-COM Common
+Dialog Box Library API, the same class of mechanism Audacity's own
+Windows build uses for this exact dialog — rather than a third variation
+on `IFileOpenDialog`. This is a genuinely different kind of Windows
+mechanism: a single function call taking a struct pointer, no COM
+interfaces, no COM threading-model initialization at all (`CoInitializeEx`
+was part of both previous implementations; this one has no COM dependency
+whatsoever). Selected files come back from Windows in one buffer: for a
+single file, the complete path with no separator; for multiple files, the
+current directory followed by every selected filename, each
+NULL-separated, with an extra NULL terminating the whole list — this
+exact shape is Microsoft's own documented behavior for
+`OFN_ALLOWMULTISELECT` with `OFN_EXPLORER`, and `parse_multi_select_buffer`
+implements it directly.
+
+`wfd` is no longer a dependency. The `windows` crate (Microsoft's own
+official bindings, `Win32_UI_Controls_Dialogs` feature) is used instead,
+scoped to `[target.'cfg(windows)'.dependencies]` in `Cargo.toml` since
+this app only ships Windows installers. Buffer size for the multi-select
+return value is 65536 UTF-16 code units — generous enough for hundreds of
+long filenames, since a too-small buffer is a well-documented way this
+specific API silently fails on large selections.
+
+### What was actually verified this time, and how
+
+The buffer-parsing logic (`parse_multi_select_buffer`) is the one
+genuinely new, hand-written piece of logic in this build, and it doesn't
+depend on any Windows-specific API at all — it's plain Rust operating on
+a `&[u16]` slice. That means it's the first piece of this app's
+Windows-only Rust code that could actually be extracted and run with a
+real compiler in this environment, rather than only reviewed by eye:
+
+- Copied verbatim into a standalone file with no Tauri, no `windows`
+  crate, no dependencies at all — just `std`.
+- Compiled and run with real `rustc` (installed in this sandbox via
+  `apt-get install cargo rustc` specifically for this purpose) against
+  six cases: a single file selected (no directory prefix, per Microsoft's
+  documented special case), several files, the **exact 15-file selection
+  from real Windows testing** (including all four `.aup3` files, verified
+  each of the eleven audio files' paths were reconstructed correctly),
+  cancellation (empty buffer), an oversized 65536-element buffer with
+  real trailing zero padding (to catch any bug that would read garbage
+  past the intended content), and filenames containing spaces (a classic
+  risk area for NULL-splitting logic). All six passed.
+- Confirmed programmatically — not by eye — that the tested copy is
+  character-for-character identical to what's actually in
+  `src-tauri/src/main.rs` (a diff of the two function bodies showed only
+  comment differences, zero logic differences).
+
+This is a different, stronger claim than previous builds could make about
+their own Rust code: not "the API surface looks right based on reading
+documentation," but "this exact logic was executed against realistic and
+edge-case input and produced the correct output." What remains unverified
+is unchanged from every previous Rust-side build: the actual Windows API
+calls (`GetOpenFileNameW`, the `OPENFILENAMEW` struct field assignments)
+cannot be compiled or run in this environment, confirmed directly —
+`windows-rs` gates its real implementation behind `cfg(windows)`, which
+doesn't evaluate true on this Linux host, and there's no network path
+here to a Windows Rust target. The struct field names and the
+`OFN_EXPLORER`/`OFN_ALLOWMULTISELECT`/`OPEN_FILENAME_FLAGS` constant path
+were confirmed against Microsoft's own generated Rust API documentation
+before being used, the same standard applied in 0.1.5.
+
+### Diagnostics
+
+Extended to the exact field names requested: "Win32 multi-select
+requested," "Win32 picker returned," through the existing
+boundary/read/decoded/opened stages — a simple rename from 0.1.5's
+wording, not a structural change, so the panel's behavior (collapsed,
+on-demand, never auto-announced) is unchanged.
+
 ## Recommended next phase
 
-Build 0.1.5 via GitHub Actions and, on real Windows, select several files
+Build 0.1.6 via GitHub Actions and, on real Windows, select several files
 in one Open Audio operation, then open the Open Audio Diagnostics panel in
-the footer immediately after. "Windows picker returned" is the number that
-matters: it now comes from a call that has never touched
-`tauri-plugin-dialog` at all, so this is a genuinely different test than
-any of the last four builds. If it still reports 1 regardless of selection
-size, the next investigation is below the application layer entirely —
-Windows shell extensions, a security product intercepting the dialog, or
-something specific to this machine's environment — since two independent
-Windows dialog implementations (`tauri-plugin-dialog` and now `wfd`) would
-have failed identically. If it reports the real count, confirm every later
-stage matches through to "Documents opened," and confirm the document/
-window title, H1, skip links, footer, and landmark structure are all still
-correct. After the real multi-file count is confirmed working: a fair
-trial of the current document-switching combo box, then markers (Phase 6),
-since several editing operations here (set selection start/end, navigate
-by increment) already share the underlying mechanics markers will need.
+the footer immediately after. "Win32 picker returned" is the number that
+matters: it now comes from `GetOpenFileNameW`, a non-COM API with no
+relationship to either `tauri-plugin-dialog` or `wfd`/`IFileOpenDialog`,
+so this is a genuinely different test, not a repeat. If it still reports 1
+regardless of selection size, three independently-implemented Windows
+multi-select mechanisms will have failed identically on this machine — at
+that point the investigation belongs outside this app's code entirely
+(shell extensions, security software, a machine-specific policy affecting
+file dialogs generally), not in a fourth picker implementation. If it
+reports the real count, confirm every later stage matches through to
+"Documents opened," and confirm the document/window title, H1, skip
+links, footer, and landmark structure are all still correct. After the
+real multi-file count is confirmed working: a fair trial of the current
+document-switching combo box, then markers (Phase 6), since several
+editing operations here (set selection start/end, navigate by increment)
+already share the underlying mechanics markers will need.

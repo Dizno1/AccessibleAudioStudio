@@ -25,47 +25,126 @@ struct PickedAudioFile {
 /// exactly how many files survived each stage.
 #[derive(Serialize)]
 struct PickAudioFilesResult {
-    windows_native_multi_select: bool,
+    win32_multi_select: bool,
     native_dialog_count: usize,
     files: Vec<PickedAudioFile>,
     read_errors: Vec<String>,
 }
 
-/// Shows Windows' own native multi-select "Open" dialog — IFileOpenDialog
-/// with FOS_ALLOWMULTISELECT — via the small, Windows-only `wfd` crate,
-/// and returns every selected path.
+// A generous buffer for the Explorer-style multi-select return value.
+// GetOpenFileNameW writes the current directory followed by every
+// selected filename into one buffer, each NULL-separated — a small
+// buffer is the classic way this API silently truncates a large
+// selection, so this is sized for hundreds of long filenames rather than
+// the handful used in earlier testing.
+#[cfg(windows)]
+const FILE_BUFFER_LEN: usize = 65536;
+
+/// Shows Windows' classic Explorer-style multi-select "Open" dialog —
+/// `GetOpenFileNameW` with `OFN_EXPLORER | OFN_ALLOWMULTISELECT` — the
+/// same class of API Audacity's own Windows build uses for this dialog.
 ///
-/// Why this exists: 0.1.2 called tauri-plugin-dialog from JavaScript;
-/// 0.1.3 added diagnostics that proved only one file was ever returned;
-/// 0.1.4 moved the same tauri-plugin-dialog call into Rust directly
-/// (bypassing the JS-binding layer entirely), and real Windows testing
-/// still reported exactly one file — "Multi-select requested: yes. Native
-/// dialog returned: 1 file." — with every stage after that processing
-/// that one file correctly. That is conclusive evidence the loss is
-/// inside tauri-plugin-dialog's own Windows dialog backend, not anywhere
-/// in this app's code, which is why this build stops calling
-/// tauri-plugin-dialog for this function at all and instead calls the
-/// same underlying Windows COM API (IFileOpenDialog) that Explorer and
-/// Audacity themselves use, through `wfd` — a small, Windows-only crate
-/// built specifically around that one API, rather than a large
-/// cross-platform abstraction layered on top of it.
+/// Why this exists: 0.1.2 through 0.1.4 called `tauri-plugin-dialog`
+/// (first from JavaScript, then from Rust directly); 0.1.5 replaced that
+/// with a direct call to the modern `IFileOpenDialog` COM interface via
+/// the `wfd` crate. Both are legitimate, independently-implemented
+/// multi-select APIs, and real Windows testing reported the exact same
+/// symptom for both — "returned: 1 file" regardless of selection size —
+/// which is what makes the classic, non-COM `GetOpenFileNameW` mechanism
+/// worth trying as a genuinely different code path, not a variation on
+/// the same one.
 ///
-/// Returns an empty Vec if the user cancels — that is not an error.
+/// Returns an empty Vec if the user cancels — that is not an error,
+/// detected via `CommDlgExtendedError()` returning 0.
 #[cfg(windows)]
 fn pick_files_native() -> Result<Vec<PathBuf>, String> {
-    let params = wfd::DialogParams {
-        options: wfd::FOS_ALLOWMULTISELECT | wfd::FOS_FORCEFILESYSTEM,
-        file_types: vec![
-            ("Audio", "*.wav;*.mp3;*.m4a;*.flac;*.ogg"),
-            ("All Files", "*.*"),
-        ],
-        ..Default::default()
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Controls::Dialogs::{
+        CommDlgExtendedError, GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER,
+        OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
 
-    match wfd::open_dialog(params) {
-        Ok(result) => Ok(result.selected_file_paths),
-        Err(wfd::DialogError::UserCancelled) => Ok(Vec::new()),
-        Err(err) => Err(format!("{:?}", err)),
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    // Filter pairs are NULL-separated, with a final extra NULL to
+    // terminate the whole list: "Display Name\0*.pattern\0" repeated,
+    // then one more \0.
+    let filter = to_wide("Audio\0*.wav;*.mp3;*.m4a;*.flac;*.ogg\0All Files\0*.*\0\0");
+    let title = to_wide("Open Audio");
+    let mut file_buffer: Vec<u16> = vec![0u16; FILE_BUFFER_LEN];
+
+    let mut ofn = OPENFILENAMEW::default();
+    ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = HWND::default();
+    ofn.lpstrFilter = windows::core::PCWSTR(filter.as_ptr());
+    ofn.lpstrFile = PWSTR(file_buffer.as_mut_ptr());
+    ofn.nMaxFile = file_buffer.len() as u32;
+    ofn.lpstrTitle = windows::core::PCWSTR(title.as_ptr());
+    ofn.Flags = OFN_EXPLORER
+        | OFN_ALLOWMULTISELECT
+        | OFN_FILEMUSTEXIST
+        | OFN_PATHMUSTEXIST
+        | OFN_HIDEREADONLY;
+
+    let succeeded = unsafe { GetOpenFileNameW(&mut ofn) };
+
+    if !succeeded.as_bool() {
+        let error_code = unsafe { CommDlgExtendedError() };
+        if error_code.0 == 0 {
+            // User cancelled the dialog — not an error.
+            return Ok(Vec::new());
+        }
+        return Err(format!(
+            "GetOpenFileNameW failed (CommDlgExtendedError code {}).",
+            error_code.0
+        ));
+    }
+
+    Ok(parse_multi_select_buffer(&file_buffer))
+}
+
+/// Parses the Explorer-style multi-select return buffer into a list of
+/// complete file paths.
+///
+/// The buffer contains a sequence of NULL-terminated UTF-16 strings,
+/// itself terminated by an extra NULL (i.e. a double-NULL after the last
+/// string) — see MSDN, OPENFILENAMEW.lpstrFile. Two distinct shapes are
+/// possible, per Microsoft's own documented behavior, and both are
+/// handled explicitly rather than assumed:
+///   - Exactly one file selected: the buffer holds a single string, and
+///     it is already the complete path (there is no separate directory
+///     entry in this case).
+///   - Two or more files selected: the first string is the directory,
+///     and every string after it is one filename to be joined onto that
+///     directory to form a complete path.
+#[cfg(windows)]
+fn parse_multi_select_buffer(buffer: &[u16]) -> Vec<PathBuf> {
+    // Split the buffer into NULL-terminated segments, stopping at the
+    // first empty segment (the double-NULL terminator) rather than
+    // trusting the buffer's full allocated length.
+    let mut strings: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    for i in 0..buffer.len() {
+        if buffer[i] == 0 {
+            if i == start {
+                // Empty segment: this is the terminating double-NULL.
+                break;
+            }
+            strings.push(String::from_utf16_lossy(&buffer[start..i]));
+            start = i + 1;
+        }
+    }
+
+    match strings.len() {
+        0 => Vec::new(),
+        1 => vec![PathBuf::from(&strings[0])],
+        _ => {
+            let dir = PathBuf::from(&strings[0]);
+            strings[1..].iter().map(|name| dir.join(name)).collect()
+        }
     }
 }
 
@@ -117,7 +196,7 @@ async fn pick_and_read_audio_files() -> Result<PickAudioFilesResult, String> {
     }
 
     Ok(PickAudioFilesResult {
-        windows_native_multi_select: cfg!(windows),
+        win32_multi_select: cfg!(windows),
         native_dialog_count,
         files,
         read_errors,
