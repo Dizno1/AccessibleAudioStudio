@@ -815,6 +815,26 @@ code — confirmed directly, not assumed. What differs in 0.1.7 specifically
 is that this one function has a real, acknowledged signature ambiguity
 that 0.1.6's did not.
 
+### Compile fix (same 0.1.8, no version change)
+
+The first real GitHub Actions Windows build of this code failed, with the
+compiler reporting a `windows_core::Param<HWND>` trait-bound mismatch.
+The bug: `GetDlgItem(Some(parent), FILENAME_COMBO_ID)` — passing
+`Some(parent)` (an `Option<HWND>`) where this version of the `windows`
+crate expects the `HWND` value directly, via the `Param<HWND>` trait
+(which `HWND` itself implements; `Option<HWND>` does not). This is a
+different, narrower mistake than 0.1.7's `HDROP`/`isize` bug, but the
+same *category* — an `Option`/wrapper-type mix-up around a Windows
+handle — caught the same way: by a real compiler this environment
+doesn't have, after being found through direct inspection of the actual
+source by a human reader rather than a guess. `GetParent(hdlg)` and
+`OpenClipboard(HWND::default())` were checked for the same pattern and
+were already correct (bare `HWND`, no `Some()` wrapping); this was the
+only instance. Fixed by removing the wrapper:
+`GetDlgItem(parent, FILENAME_COMBO_ID)`. The diff against the submitted
+0.1.8 is exactly one line changed, plus one explanatory comment —
+nothing else in the repository was touched.
+
 ## 0.1.8 — reverted the bypass, attempted live paste interception instead
 
 Real Windows testing of 0.1.7 found the clipboard-bypass approach

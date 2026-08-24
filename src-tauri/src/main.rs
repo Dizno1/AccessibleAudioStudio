@@ -305,7 +305,15 @@ unsafe extern "system" fn open_dialog_hook_proc(
         if parent == windows::Win32::Foundation::HWND::default() {
             continue;
         }
-        if let Ok(combo) = GetDlgItem(Some(parent), FILENAME_COMBO_ID) {
+        // windows 0.58 resolves this parameter through the windows_core
+        // Param<HWND> trait, which takes the HWND value directly rather
+        // than an Option-wrapped one (unlike GetParent's return type,
+        // which genuinely is optional and stays Option-handled above via
+        // unwrap_or_default()) — GetDlgItem's own "control not found"
+        // case is expressed through its Result, not through Option on
+        // the input. The previous `Some(parent)` here was exactly that
+        // mix-up, caught by the real Windows compiler.
+        if let Ok(combo) = GetDlgItem(parent, FILENAME_COMBO_ID) {
             if combo != windows::Win32::Foundation::HWND::default() {
                 let _ = SetWindowSubclass(combo, Some(paste_subclass_proc), SUBCLASS_ID, 0);
                 break;
