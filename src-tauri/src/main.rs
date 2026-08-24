@@ -269,6 +269,43 @@ unsafe extern "system" fn paste_subclass_proc(
     DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
+/// The real, fixed C memory layout of `NMHDR` (winuser.h/commctrl.h):
+/// `typedef struct tagNMHDR { HWND hwndFrom; UINT_PTR idFrom; UINT code; } NMHDR;`
+/// — the header every `WM_NOTIFY` message (including the `OFNOTIFYW` the
+/// dialog hook receives, which starts with this exact struct as its
+/// first field) begins with, unchanged since Windows 3.1.
+///
+/// Defined locally, rather than imported from the `windows` crate,
+/// specifically because that import path (`Win32::UI::Controls::Dialogs`)
+/// turned out not to resolve cleanly for this notification's types in
+/// the real Windows build — the previous version of this file imported
+/// `OFNOTIFYW` and `CDN_INITDONE` from there, and the real compiler
+/// reported an unresolved `CDN_INITDONE` and a cascading type error on
+/// the resulting `notify` value. Since only two fields are ever needed
+/// here (`code`, to identify which notification this is, and
+/// `hwndFrom`, one of the candidate parent windows used below), reading
+/// them via a hand-written, `#[repr(C)]` struct matching the documented
+/// ABI exactly removes any dependency on whichever `windows` crate
+/// module does or doesn't export the full notification types — Windows
+/// itself writes this memory layout; nothing here depends on how any
+/// particular Rust binding chooses to model it.
+#[cfg(windows)]
+#[repr(C)]
+struct RawNmhdr {
+    hwnd_from: windows::Win32::Foundation::HWND,
+    id_from: usize,
+    code: u32,
+}
+
+/// CDN_INITDONE's real value, per commdlg.h:
+/// `#define CDN_FIRST (0U-601U)` and `#define CDN_INITDONE (CDN_FIRST - 0x0000)`
+/// — i.e. `0u32.wrapping_sub(601)`. Hardcoded for the same reason as
+/// `RawNmhdr` above: this is a fixed, decades-stable Win32 ABI constant,
+/// not something that needs to come from whichever crate module happens
+/// to export it (or, as found here, doesn't).
+#[cfg(windows)]
+const CDN_INITDONE: u32 = 0u32.wrapping_sub(601);
+
 /// OFNHookProc installed on the Open dialog. Handles exactly one
 /// notification, CDN_INITDONE (sent once, after the dialog has finished
 /// laying itself out); every other message returns 0 immediately,
@@ -281,7 +318,6 @@ unsafe extern "system" fn open_dialog_hook_proc(
     _wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> usize {
-    use windows::Win32::UI::Controls::Dialogs::{CDN_INITDONE, OFNOTIFYW};
     use windows::Win32::UI::Controls::SetWindowSubclass;
     use windows::Win32::UI::WindowsAndMessaging::{GetDlgItem, GetParent, WM_NOTIFY};
 
@@ -289,8 +325,8 @@ unsafe extern "system" fn open_dialog_hook_proc(
         return 0;
     }
 
-    let notify = &*(lparam.0 as *const OFNOTIFYW);
-    if notify.hdr.code != CDN_INITDONE.0 as isize {
+    let notify = &*(lparam.0 as *const RawNmhdr);
+    if notify.code != CDN_INITDONE {
         return 0;
     }
 
@@ -299,7 +335,7 @@ unsafe extern "system" fn open_dialog_hook_proc(
     // to confirm in this environment. GetDlgItem simply returns a null
     // handle for a wrong candidate; trying more than one costs nothing
     // and only improves the odds of finding the real control.
-    let candidates = [hdlg, GetParent(hdlg).unwrap_or_default(), notify.hdr.hwndFrom];
+    let candidates = [hdlg, GetParent(hdlg).unwrap_or_default(), notify.hwnd_from];
 
     for parent in candidates {
         if parent == windows::Win32::Foundation::HWND::default() {
@@ -311,8 +347,8 @@ unsafe extern "system" fn open_dialog_hook_proc(
         // which genuinely is optional and stays Option-handled above via
         // unwrap_or_default()) — GetDlgItem's own "control not found"
         // case is expressed through its Result, not through Option on
-        // the input. The previous `Some(parent)` here was exactly that
-        // mix-up, caught by the real Windows compiler.
+        // the input. An earlier version of this line, `Some(parent)`,
+        // was exactly that mix-up, caught by the real Windows compiler.
         if let Ok(combo) = GetDlgItem(parent, FILENAME_COMBO_ID) {
             if combo != windows::Win32::Foundation::HWND::default() {
                 let _ = SetWindowSubclass(combo, Some(paste_subclass_proc), SUBCLASS_ID, 0);

@@ -835,6 +835,45 @@ only instance. Fixed by removing the wrapper:
 0.1.8 is exactly one line changed, plus one explanatory comment —
 nothing else in the repository was touched.
 
+### Second compile fix (same 0.1.8, no version change)
+
+The next real Windows build failed again, on a different part of the
+same dialog-hook code: `CDN_INITDONE` reported as undefined, and a
+cascading `E0610` error treating the resulting notification value as a
+primitive with no fields. Root cause: `CDN_INITDONE` and `OFNOTIFYW`
+were imported from `windows::Win32::UI::Controls::Dialogs`, and that
+import path did not resolve cleanly for these two names against the
+exact crate/feature combination this repository builds with — once that
+import fails, everything downstream that depends on `OFNOTIFYW`'s type
+(including `notify`, the local variable holding the cast notification
+pointer) loses its real type and the compiler reports it as an
+unresolvable, field-less value. (A third reported error, an unresolved
+`winapi::um::commctrl` import, does not correspond to anything in this
+repository — `winapi` is not a dependency here and was never referenced
+anywhere in this file; that specific detail is not addressed because
+there was nothing in the source to fix.)
+
+Fixed by no longer depending on the `windows` crate to export these two
+particular names at all. `NMHDR` — the struct every `WM_NOTIFY`
+message, including this one, begins with — has a fixed,
+decades-unchanged C memory layout
+(`HWND hwndFrom; UINT_PTR idFrom; UINT code;`), and only two of its
+fields were ever actually used here (`code`, to identify the
+notification, and `hwndFrom`, one of the candidate parent windows).
+Rather than trying to import the type, a local `#[repr(C)]` struct
+(`RawNmhdr`) now models exactly that layout directly, and
+`CDN_INITDONE`'s own fixed value (`0u32.wrapping_sub(601)`, per
+`commdlg.h`'s `#define CDN_FIRST (0U-601U)` / `#define CDN_INITDONE
+(CDN_FIRST - 0x0000)` — verified by direct calculation, matching the
+well-known `-601` value read as a signed 32-bit int) is hardcoded the
+same way `WM_NOTIFY`/`WM_PASTE` already were. Since this data is read
+directly out of memory Windows itself writes according to that fixed
+ABI, this sidesteps the crate-export question entirely rather than
+guessing at a different import path. The diff against the previous
+0.1.8 delivery is scoped entirely to this one function's notification
+handling; nothing else in the repository, including the dialog's own
+`GetOpenFileNameW`/`OPENFILENAMEW` setup, was touched.
+
 ## 0.1.8 — reverted the bypass, attempted live paste interception instead
 
 Real Windows testing of 0.1.7 found the clipboard-bypass approach
