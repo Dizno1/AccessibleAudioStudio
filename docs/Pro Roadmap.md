@@ -942,6 +942,53 @@ raw FFI subclass declarations from this one) — narrowing, build over
 build, exactly which lines still carry real risk instead of treating
 the whole file as equally uncertain.
 
+### First real runtime result, and granular clipboard diagnostics (same 0.1.8, no version change)
+
+0.1.8-fix3 compiled and ran on real Windows — the first time any build in
+this whole effort has gotten past compilation into actual runtime
+behavior. Real testing (Explorer multi-select → Ctrl+C → this app →
+Ctrl+O → Open dialog → File name field → Ctrl+V → Open) produced:
+
+> Open dialog launched: yes.
+> Multi-select enabled: yes.
+> CF_HDROP detected during paste: no.
+> Files contained in CF_HDROP: 0.
+> File paths inserted/communicated to dialog: 0.
+> Native dialog returned: 1 file.
+
+This is real, useful information: the dialog itself, the hook
+installation, and the subclass mechanism are evidently working well
+enough to reach the paste-handling code at all — but that code reported
+`CF_HDROP` as unavailable. Per the correction directive for this build,
+that single collapsed "no" isn't enough to act on, since it could mean
+any of several genuinely different things: the subclass never received
+`WM_PASTE` in the first place, `OpenClipboard` failed, `CF_HDROP`
+genuinely wasn't on the clipboard, it was available but
+`GetClipboardData` failed, or `GetClipboardData` succeeded but
+`DragQueryFileW` returned nothing. No architectural change was made this
+round — only instrumentation, exactly as directed.
+
+**What changed:** `read_clipboard_file_list` (which only ever returned a
+final `Option<Vec<PathBuf>>`) became `read_clipboard_diagnosed`, which
+records every one of those stages regardless of where the read actually
+stops, including — via `EnumClipboardFormats`, verified against
+Microsoft's own documented C signature — the complete list of clipboard
+format IDs that genuinely *are* present at the moment of paste, whether
+or not `CF_HDROP` is one of them. `GetLastError().0` (confirmed correct
+by finding a real, published `windows-rs` code example using this exact
+call and field access, not by analogy this time) captures the specific
+Windows error code if `OpenClipboard` fails. All of this is threaded
+through the same thread-local diagnostics mechanism already in place,
+out to the Open Audio Diagnostics panel, where each stage now only
+appears once the stage before it was actually reached — "WM_PASTE
+received by subclass: no" stops the chain right there rather than
+printing four more lines of stages that were never reached at all.
+
+Every new field is additive to the diagnostics panel; nothing about
+Open Audio's actual behavior changed. Kept the version at 0.1.8, since
+this is diagnostic instrumentation for the same test build, not a new
+one.
+
 ## 0.1.8 — reverted the bypass, attempted live paste interception instead
 
 Real Windows testing of 0.1.7 found the clipboard-bypass approach

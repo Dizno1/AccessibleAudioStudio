@@ -248,8 +248,11 @@ async function openAudioViaTauriCommand() {
   try {
     const { invoke } = window.__TAURI__.core;
     const result = await invoke("pick_and_read_audio_files");
-    // result: { dialog_launched, win32_multi_select, paste_hdrop_detected, paste_hdrop_file_count,
-    //           paths_supplied_to_dialog, native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
+    // result: { dialog_launched, win32_multi_select, wm_paste_received, open_clipboard_succeeded,
+    //           open_clipboard_error, cf_hdrop_available, available_clipboard_formats,
+    //           get_clipboard_data_succeeded, drag_query_file_count, paste_hdrop_detected,
+    //           paste_hdrop_file_count, paste_hdrop_file_names, paths_supplied_to_dialog,
+    //           native_dialog_count, files: [{ name, path, data }], read_errors: [...] }
 
     if (result.native_dialog_count === 0 && result.files.length === 0 && result.read_errors.length === 0) {
       return; // user cancelled the dialog
@@ -265,8 +268,16 @@ async function openAudioViaTauriCommand() {
       pathway: "windows-native",
       dialogLaunched: result.dialog_launched,
       win32MultiSelect: result.win32_multi_select,
+      wmPasteReceived: result.wm_paste_received,
+      openClipboardSucceeded: result.open_clipboard_succeeded,
+      openClipboardError: result.open_clipboard_error,
+      cfHdropAvailable: result.cf_hdrop_available,
+      availableClipboardFormats: result.available_clipboard_formats,
+      getClipboardDataSucceeded: result.get_clipboard_data_succeeded,
+      dragQueryFileCount: result.drag_query_file_count,
       pasteHdropDetected: result.paste_hdrop_detected,
       pasteHdropFileCount: result.paste_hdrop_file_count,
+      pasteHdropFileNames: result.paste_hdrop_file_names,
       pathsSuppliedToDialog: result.paths_supplied_to_dialog,
       nativeDialogCount: result.native_dialog_count,
       boundaryCount: result.files.length + result.read_errors.length,
@@ -280,8 +291,16 @@ async function openAudioViaTauriCommand() {
       pathway: "windows-native",
       dialogLaunched: false,
       win32MultiSelect: true,
+      wmPasteReceived: false,
+      openClipboardSucceeded: false,
+      openClipboardError: 0,
+      cfHdropAvailable: false,
+      availableClipboardFormats: [],
+      getClipboardDataSucceeded: false,
+      dragQueryFileCount: 0,
       pasteHdropDetected: false,
       pasteHdropFileCount: 0,
+      pasteHdropFileNames: [],
       pathsSuppliedToDialog: 0,
       nativeDialogCount: 0,
       boundaryCount: 0,
@@ -308,8 +327,16 @@ async function handleOpenAudioInputChange() {
     pathway: "browser-input",
     dialogLaunched: false,
     win32MultiSelect: false,
+    wmPasteReceived: false,
+    openClipboardSucceeded: false,
+    openClipboardError: 0,
+    cfHdropAvailable: false,
+    availableClipboardFormats: [],
+    getClipboardDataSucceeded: false,
+    dragQueryFileCount: 0,
     pasteHdropDetected: false,
     pasteHdropFileCount: 0,
+    pasteHdropFileNames: [],
     pathsSuppliedToDialog: null,
     nativeDialogCount: null,
     boundaryCount: null,
@@ -352,8 +379,16 @@ async function processOpenedFiles(fileArray, meta) {
     pathway: meta.pathway,
     dialogLaunched: meta.dialogLaunched,
     win32MultiSelect: meta.win32MultiSelect,
+    wmPasteReceived: meta.wmPasteReceived,
+    openClipboardSucceeded: meta.openClipboardSucceeded,
+    openClipboardError: meta.openClipboardError,
+    cfHdropAvailable: meta.cfHdropAvailable,
+    availableClipboardFormats: meta.availableClipboardFormats,
+    getClipboardDataSucceeded: meta.getClipboardDataSucceeded,
+    dragQueryFileCount: meta.dragQueryFileCount,
     pasteHdropDetected: meta.pasteHdropDetected,
     pasteHdropFileCount: meta.pasteHdropFileCount,
+    pasteHdropFileNames: meta.pasteHdropFileNames,
     pathsSuppliedToDialog: meta.pathsSuppliedToDialog,
     nativeDialogCount: meta.nativeDialogCount,
     boundaryCount: meta.boundaryCount,
@@ -926,13 +961,60 @@ function updateOpenAudioDiagnostics(stats) {
     ? `Multi-select enabled: ${stats.win32MultiSelect ? "yes" : "no"}.`
     : "Multi-select enabled: not applicable (browser file picker used).";
 
-  const pasteHdropLine = isWindowsNativePathway
-    ? `CF_HDROP detected during paste: ${stats.pasteHdropDetected ? "yes" : "no"}.`
-    : "CF_HDROP detected during paste: not applicable (browser file picker used).";
+  // The full clipboard-boundary breakdown, stage by stage, so a "no"
+  // never collapses several genuinely different failures into one
+  // undifferentiated answer: the subclass not receiving WM_PASTE at all
+  // is a different finding than OpenClipboard failing, which is
+  // different from CF_HDROP genuinely not being available, which is
+  // different from CF_HDROP being available but GetClipboardData
+  // failing, which is different from GetClipboardData succeeding but
+  // DragQueryFileW returning nothing. Each stage below only fires if
+  // WM_PASTE actually reached the subclass at all — if it didn't, that
+  // is itself the answer, and every stage after it is reported as
+  // not reached rather than a misleading "no".
+  const wmPasteLine = isWindowsNativePathway
+    ? `WM_PASTE received by subclass: ${stats.wmPasteReceived ? "yes" : "no"}.`
+    : "WM_PASTE received by subclass: not applicable (browser file picker used).";
 
-  const pasteHdropCountLine = isWindowsNativePathway
-    ? `Files contained in CF_HDROP: ${stats.pasteHdropFileCount}.`
-    : null;
+  const clipboardLines = [];
+  if (isWindowsNativePathway) {
+    if (!stats.wmPasteReceived) {
+      clipboardLines.push("Clipboard was never read: WM_PASTE was not received.");
+    } else {
+      clipboardLines.push(
+        stats.openClipboardSucceeded
+          ? "OpenClipboard: succeeded."
+          : `OpenClipboard: failed (Windows error code ${stats.openClipboardError}).`
+      );
+      if (stats.openClipboardSucceeded) {
+        clipboardLines.push(
+          `Clipboard formats available: ${
+            stats.availableClipboardFormats && stats.availableClipboardFormats.length
+              ? stats.availableClipboardFormats.join(", ")
+              : "none"
+          }.`
+        );
+        clipboardLines.push(`CF_HDROP available: ${stats.cfHdropAvailable ? "yes" : "no"}.`);
+        if (stats.cfHdropAvailable) {
+          clipboardLines.push(
+            `GetClipboardData(CF_HDROP): ${stats.getClipboardDataSucceeded ? "succeeded" : "failed"}.`
+          );
+          if (stats.getClipboardDataSucceeded) {
+            clipboardLines.push(`DragQueryFileW file count: ${stats.dragQueryFileCount}.`);
+            clipboardLines.push(
+              stats.pasteHdropFileNames && stats.pasteHdropFileNames.length
+                ? `Paths obtained: ${stats.pasteHdropFileNames.join(", ")}.`
+                : "Paths obtained: none."
+            );
+          }
+        }
+      }
+    }
+  }
+
+  const pasteHdropLine = isWindowsNativePathway
+    ? `Multi-file paste used (2+ files): ${stats.pasteHdropDetected ? "yes" : "no"}.`
+    : "Multi-file paste used: not applicable (browser file picker used).";
 
   const pathsSuppliedLine = isWindowsNativePathway
     ? `File paths inserted/communicated to dialog: ${stats.pathsSuppliedToDialog}.`
@@ -961,8 +1043,9 @@ function updateOpenAudioDiagnostics(stats) {
     stats.failureReason ? `Open Audio could not be completed: ${stats.failureReason}.` : null,
     dialogLaunchedLine,
     multiSelectLine,
+    wmPasteLine,
+    ...clipboardLines,
     pasteHdropLine,
-    pasteHdropCountLine,
     pathsSuppliedLine,
     nativeReturnedLine,
     boundaryLine,

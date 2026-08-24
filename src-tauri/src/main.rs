@@ -27,8 +27,16 @@ struct PickedAudioFile {
 struct PickAudioFilesResult {
     dialog_launched: bool,
     win32_multi_select: bool,
+    wm_paste_received: bool,
+    open_clipboard_succeeded: bool,
+    open_clipboard_error: u32,
+    cf_hdrop_available: bool,
+    available_clipboard_formats: Vec<u32>,
+    get_clipboard_data_succeeded: bool,
+    drag_query_file_count: u32,
     paste_hdrop_detected: bool,
     paste_hdrop_file_count: usize,
+    paste_hdrop_file_names: Vec<String>,
     paths_supplied_to_dialog: usize,
     native_dialog_count: usize,
     files: Vec<PickedAudioFile>,
@@ -87,10 +95,10 @@ const FILE_BUFFER_LEN: usize = 65536;
 ///    specific hook type could not be verified here), and if found,
 ///    installs a window subclass (`SetWindowSubclass`) on it.
 /// 3. The subclass procedure (`paste_subclass_proc`) does nothing for
-///    every message except `WM_PASTE`. On that one message: if the
-///    clipboard holds 2+ files (via the same CF_HDROP reading logic
-///    0.1.7 introduced, factored out below as
-///    `read_clipboard_file_list`), it builds the quoted multi-name
+///    every message except `WM_PASTE`. On that one message: it reads the
+///    clipboard end to end (`read_clipboard_diagnosed`, recording every
+///    stage — see "Clipboard-boundary diagnostics" below), and if 2+
+///    files are found there, builds the quoted multi-name
 ///    string and calls `SetWindowTextW` on the control directly instead
 ///    of letting the default paste happen. Otherwise, it calls
 ///    `DefSubclassProc` — ordinary default paste behavior, unchanged.
@@ -126,65 +134,133 @@ const FILE_BUFFER_LEN: usize = 65536;
 /// confirmed directly across every build since 0.1.4 — that has not
 /// changed for 0.1.8.
 
-/// Reads a Windows Shell copied-file list (CF_HDROP) from the clipboard,
-/// if one is present. Returns None if the clipboard couldn't be opened,
-/// contains no CF_HDROP data, or the file list is empty.
+/// Everything Open Audio Diagnostics needs to distinguish exactly where,
+/// between "Ctrl+V pressed" and "paths obtained," the clipboard-reading
+/// path stops — the specific distinctions requested after 0.1.8's first
+/// real-world test: the subclass not receiving WM_PASTE at all is a
+/// different finding than OpenClipboard failing, which is different from
+/// CF_HDROP genuinely not being on the clipboard, which is different from
+/// CF_HDROP being available but GetClipboardData failing, which is
+/// different from GetClipboardData succeeding but DragQueryFileW
+/// returning nothing — each of those was previously collapsed into a
+/// single "no."
 #[cfg(windows)]
-fn read_clipboard_file_list() -> Option<Vec<PathBuf>> {
-    use windows::Win32::Foundation::HWND;
+#[derive(Default, Clone)]
+struct ClipboardReadDiagnostics {
+    open_clipboard_succeeded: bool,
+    open_clipboard_error: u32,
+    cf_hdrop_available: bool,
+    available_formats: Vec<u32>,
+    get_clipboard_data_succeeded: bool,
+    drag_query_file_count: u32,
+    paths: Vec<PathBuf>,
+}
+
+/// Reads the Windows clipboard end to end, recording exactly what
+/// happened at every stage rather than only the final yes/no this
+/// function used to return. Every one of the stages below is captured in
+/// the result regardless of whether earlier stages succeeded, wherever
+/// that's meaningful — e.g. `available_formats` is populated even when
+/// `CF_HDROP` isn't among them, specifically to answer "what did Explorer
+/// actually put there" rather than just "was the one format we expected
+/// present."
+#[cfg(windows)]
+fn read_clipboard_diagnosed() -> ClipboardReadDiagnostics {
+    use windows::Win32::Foundation::{GetLastError, HWND};
     use windows::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        CloseClipboard, EnumClipboardFormats, GetClipboardData, IsClipboardFormatAvailable,
+        OpenClipboard,
     };
     use windows::Win32::System::Ole::CF_HDROP;
     use windows::Win32::UI::Shell::DragQueryFileW;
 
+    let mut diag = ClipboardReadDiagnostics::default();
+
     unsafe {
-        if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_err() {
-            return None;
+        // Checked before OpenClipboard, matching how IsClipboardFormatAvailable
+        // is documented to work — it does not itself require the clipboard
+        // to be open first.
+        diag.cf_hdrop_available = IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok();
+
+        match OpenClipboard(HWND::default()) {
+            Ok(()) => {
+                diag.open_clipboard_succeeded = true;
+            }
+            Err(_) => {
+                diag.open_clipboard_error = GetLastError().0;
+                // Never call CloseClipboard after a failed OpenClipboard —
+                // there is nothing to close, and doing so anyway is
+                // documented as incorrect API usage.
+                return diag;
+            }
         }
-        if OpenClipboard(HWND::default()).is_err() {
-            return None;
+
+        // Enumerate every format actually present, independent of
+        // CF_HDROP specifically — this is what actually answers "what did
+        // Explorer really put on the clipboard," rather than only
+        // confirming or denying the one format this app looks for.
+        let mut fmt = 0u32;
+        loop {
+            let next = EnumClipboardFormats(fmt);
+            if next == 0 {
+                break;
+            }
+            diag.available_formats.push(next);
+            fmt = next;
         }
 
-        let result = (|| -> Option<Vec<PathBuf>> {
-            let handle = GetClipboardData(CF_HDROP.0 as u32).ok()?;
-            let hdrop = windows::Win32::UI::Shell::HDROP(handle.0);
+        if diag.cf_hdrop_available {
+            match GetClipboardData(CF_HDROP.0 as u32) {
+                Ok(handle) => {
+                    diag.get_clipboard_data_succeeded = true;
+                    let hdrop = windows::Win32::UI::Shell::HDROP(handle.0);
 
-            let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
-            if count == 0 {
-                return None;
-            }
+                    let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+                    diag.drag_query_file_count = count;
 
-            let mut paths = Vec::with_capacity(count as usize);
-            for i in 0..count {
-                let needed_len = DragQueryFileW(hdrop, i, None);
-                if needed_len == 0 {
-                    continue;
+                    for i in 0..count {
+                        let needed_len = DragQueryFileW(hdrop, i, None);
+                        if needed_len == 0 {
+                            continue;
+                        }
+                        let mut buffer = vec![0u16; (needed_len + 1) as usize];
+                        let written = DragQueryFileW(hdrop, i, Some(&mut buffer));
+                        if written == 0 {
+                            continue;
+                        }
+                        buffer.truncate(written as usize);
+                        diag.paths.push(PathBuf::from(String::from_utf16_lossy(&buffer)));
+                    }
                 }
-                let mut buffer = vec![0u16; (needed_len + 1) as usize];
-                let written = DragQueryFileW(hdrop, i, Some(&mut buffer));
-                if written == 0 {
-                    continue;
+                Err(_) => {
+                    diag.get_clipboard_data_succeeded = false;
                 }
-                buffer.truncate(written as usize);
-                paths.push(PathBuf::from(String::from_utf16_lossy(&buffer)));
             }
+        }
 
-            if paths.is_empty() {
-                None
-            } else {
-                Some(paths)
-            }
-        })();
-
+        // Always reached from here on, on every path that successfully
+        // opened the clipboard above — per requirement #9.
         let _ = CloseClipboard();
-        result
     }
+
+    diag
 }
 
 #[cfg(not(windows))]
-fn read_clipboard_file_list() -> Option<Vec<PathBuf>> {
-    None
+#[derive(Default, Clone)]
+struct ClipboardReadDiagnostics {
+    open_clipboard_succeeded: bool,
+    open_clipboard_error: u32,
+    cf_hdrop_available: bool,
+    available_formats: Vec<u32>,
+    get_clipboard_data_succeeded: bool,
+    drag_query_file_count: u32,
+    paths: Vec<PathBuf>,
+}
+
+#[cfg(not(windows))]
+fn read_clipboard_diagnosed() -> ClipboardReadDiagnostics {
+    ClipboardReadDiagnostics::default()
 }
 
 // Thread-local, not global, because GetOpenFileNameW blocks the calling
@@ -199,10 +275,18 @@ thread_local! {
 }
 
 #[cfg(windows)]
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct PasteDiagnostics {
+    wm_paste_received: bool,
+    open_clipboard_succeeded: bool,
+    open_clipboard_error: u32,
+    cf_hdrop_available: bool,
+    available_formats: Vec<u32>,
+    get_clipboard_data_succeeded: bool,
+    drag_query_file_count: u32,
     hdrop_detected: bool,
     hdrop_file_count: usize,
+    hdrop_file_names: Vec<String>,
 }
 
 /// The File Name ComboBoxEx32 control's ID in an Explorer-style
@@ -308,24 +392,40 @@ unsafe extern "system" fn paste_subclass_proc(
     use windows::Win32::UI::WindowsAndMessaging::WM_PASTE;
 
     if msg == WM_PASTE {
-        if let Some(paths) = read_clipboard_file_list() {
-            if paths.len() >= 2 {
-                PASTE_DIAGNOSTICS.with(|d| {
-                    let mut d = d.borrow_mut();
-                    d.hdrop_detected = true;
-                    d.hdrop_file_count = paths.len();
-                });
+        let cd = read_clipboard_diagnosed();
 
-                let text = build_quoted_multi_name(&paths);
-                let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-                use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
-                let _ = SetWindowTextW(hwnd, windows::core::PCWSTR(wide.as_ptr()));
+        PASTE_DIAGNOSTICS.with(|d| {
+            let mut d = d.borrow_mut();
+            d.wm_paste_received = true;
+            d.open_clipboard_succeeded = cd.open_clipboard_succeeded;
+            d.open_clipboard_error = cd.open_clipboard_error;
+            d.cf_hdrop_available = cd.cf_hdrop_available;
+            d.available_formats = cd.available_formats.clone();
+            d.get_clipboard_data_succeeded = cd.get_clipboard_data_succeeded;
+            d.drag_query_file_count = cd.drag_query_file_count;
+            d.hdrop_detected = cd.paths.len() >= 2;
+            d.hdrop_file_count = cd.paths.len();
+            d.hdrop_file_names = cd
+                .paths
+                .iter()
+                .map(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.to_string_lossy().to_string())
+                })
+                .collect();
+        });
 
-                // Handled — do not also run default paste behavior,
-                // which would otherwise insert the clipboard's own
-                // (single-name-at-best) text representation afterward.
-                return windows::Win32::Foundation::LRESULT(0);
-            }
+        if cd.paths.len() >= 2 {
+            let text = build_quoted_multi_name(&cd.paths);
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+            let _ = SetWindowTextW(hwnd, windows::core::PCWSTR(wide.as_ptr()));
+
+            // Handled — do not also run default paste behavior,
+            // which would otherwise insert the clipboard's own
+            // (single-name-at-best) text representation afterward.
+            return windows::Win32::Foundation::LRESULT(0);
         }
     }
 
@@ -469,7 +569,7 @@ fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
 
     let succeeded = unsafe { GetOpenFileNameW(&mut ofn) };
 
-    let diagnostics = PASTE_DIAGNOSTICS.with(|d| *d.borrow());
+    let diagnostics = PASTE_DIAGNOSTICS.with(|d| d.borrow().clone());
 
     if !succeeded.as_bool() {
         let error_code = unsafe { CommDlgExtendedError() };
@@ -518,10 +618,18 @@ fn pick_files_native() -> Result<(Vec<PathBuf>, PasteDiagnostics), String> {
 }
 
 #[cfg(not(windows))]
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct PasteDiagnostics {
+    wm_paste_received: bool,
+    open_clipboard_succeeded: bool,
+    open_clipboard_error: u32,
+    cf_hdrop_available: bool,
+    available_formats: Vec<u32>,
+    get_clipboard_data_succeeded: bool,
+    drag_query_file_count: u32,
     hdrop_detected: bool,
     hdrop_file_count: usize,
+    hdrop_file_names: Vec<String>,
 }
 
 /// Always shows the native multi-select Open dialog, then reads every
@@ -559,8 +667,16 @@ async fn pick_and_read_audio_files() -> Result<PickAudioFilesResult, String> {
     Ok(PickAudioFilesResult {
         dialog_launched: true,
         win32_multi_select: cfg!(windows),
+        wm_paste_received: paste_diagnostics.wm_paste_received,
+        open_clipboard_succeeded: paste_diagnostics.open_clipboard_succeeded,
+        open_clipboard_error: paste_diagnostics.open_clipboard_error,
+        cf_hdrop_available: paste_diagnostics.cf_hdrop_available,
+        available_clipboard_formats: paste_diagnostics.available_formats,
+        get_clipboard_data_succeeded: paste_diagnostics.get_clipboard_data_succeeded,
+        drag_query_file_count: paste_diagnostics.drag_query_file_count,
         paste_hdrop_detected: paste_diagnostics.hdrop_detected,
         paste_hdrop_file_count: paste_diagnostics.hdrop_file_count,
+        paste_hdrop_file_names: paste_diagnostics.hdrop_file_names,
         paths_supplied_to_dialog: paste_diagnostics.hdrop_file_count,
         native_dialog_count,
         files,
