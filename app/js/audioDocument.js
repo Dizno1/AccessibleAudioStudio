@@ -25,10 +25,15 @@ export class AudioDocument {
    * @param {string} opts.baseName - filename without the "- AccessibleAudioStudio Pro" suffix, e.g. "Interview.wav"
    * @param {string} opts.sourceExtension - "wav" | "mp3" | "m4a" | "flac" | "ogg" | ""
    * @param {boolean} [opts.isNew] - true for a New Audio document with no source file
-   * @param {string|null} [opts.sourceKey] - identifies the file this document was opened from,
-   *   for already-open detection (see documentManager.js). The full file path when known
-   *   (desktop build), otherwise the filename as a best-effort fallback (browser build,
-   *   where the File API doesn't expose a path). null for a New Audio document.
+   * @param {string|null} [opts.sourceKey] - identifies the file this document was opened from.
+   *   The full file path when known (desktop build), otherwise the filename as a best-effort
+   *   fallback (browser build, where the File API doesn't expose a path). null for a New Audio
+   *   document. As of 0.2.0's multi-window architecture, this is stored but not currently used
+   *   for already-open detection — each open document is its own OS window now, and checking
+   *   "is this file already open in another window" would need its own cross-window shared
+   *   state (like SharedAudioClipboard), deliberately deferred rather than built into this
+   *   architectural milestone. Documented as a known gap versus 0.1.x's duplicate-file
+   *   protection, not silently dropped.
    */
   constructor({ buffer, baseName, sourceExtension, isNew = false, sourceKey = null }) {
     this.id = "doc-" + Date.now() + "-" + Math.random().toString(16).slice(2);

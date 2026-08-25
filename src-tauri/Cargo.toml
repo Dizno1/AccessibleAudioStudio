@@ -1,16 +1,16 @@
 [package]
 name = "accessibleaudiostudio-pro"
-version = "0.1.10"
+version = "0.2.0"
 description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
 rust-version = "1.77.2"
 
 # See https://tauri.app/v1/api/config/ / https://v2.tauri.app for reference.
-# This crate hosts the AccessibleAudioStudio Pro web app (see ../index.html
-# and ../app/, which now include the Audio Editor alongside the original
-# recording workflow) inside a native Windows window. It intentionally
-# contains no application logic of its own — the HTML/CSS/JS is unmodified.
+# This crate hosts the AccessibleAudioStudio Pro web app inside native
+# Windows windows. It intentionally contains no application logic of its
+# own beyond window/document lifecycle management — the HTML/CSS/JS is
+# unmodified except where the window architecture itself required it.
 #
 # Identity is deliberately separate from the free AccessibleAudioStudio
 # (different package/bin name, Tauri identifier, and version — see
@@ -19,31 +19,34 @@ rust-version = "1.77.2"
 # Windows treating a Pro test build as an upgrade of, or collision with, the
 # published free edition.
 #
-# windows (0.1.6, extended 0.1.7/0.1.8): "Open Audio" always shows Windows'
-# classic Explorer-style multi-select "Open" dialog via the plain, non-COM
-# GetOpenFileNameW API (OFN_EXPLORER | OFN_ALLOWMULTISELECT) — see
-# pick_files_native in src/main.rs. 0.1.7's clipboard-bypass-before-the-
-# dialog approach was removed in 0.1.8 after real testing found it produced
-# no dialog and no feedback at all; in its place, 0.1.8 installs a dialog
-# hook (OFN_ENABLEHOOK/lpfnHook) and a window subclass on the File Name
-# control to intercept Ctrl+V live, inside the dialog, and expand a copied
-# Explorer file list (CF_HDROP) into the quoted multi-name text
-# GetOpenFileNameW's own field already knows how to parse — see the
-# extensive doc comment at the top of src/main.rs for the full mechanism,
-# and for what is and is not verified about it. Win32_UI_WindowsAndMessaging
-# provides GetDlgItem, GetParent, WM_NOTIFY, WM_PASTE, SetWindowTextW.
-# Win32_UI_Shell, Win32_System_DataExchange, and Win32_System_Ole remain
-# from 0.1.7's clipboard-reading code, which 0.1.8 still uses — now from
-# inside the paste interception instead of before the dialog. As of
-# 0.1.8's second compile round, SetWindowSubclass/DefSubclassProc/
-# RemoveWindowSubclass are no longer imported from this crate at all —
-# SetWindowSubclass failed to resolve entirely in the real Windows build,
-# most likely because these Comctl32 subclassing helpers simply aren't in
-# this crate/feature combination's generated bindings; they're declared as
-# raw FFI against comctl32.dll directly in src/main.rs instead, so
-# Win32_UI_Controls (which existed only for those three functions and the
-# NMHDR type, itself replaced by a hand-written struct for the same reason)
-# is no longer a needed feature.
+# 0.2.0: architectural rebuild. AccessibleAudioStudio Pro now has two kinds
+# of windows: one persistent main "Recording Studio" window (unchanged
+# recording/playback/library, index.html), and one independent editor
+# window per open audio document (editor.html), created dynamically via
+# tauri::WebviewWindowBuilder from Rust — see open_audio_windows,
+# open_new_editor_window, and get_editor_init_info in src/main.rs. Alt+Tab
+# is now the document-switching mechanism; the single-webview,
+# multi-document "Open audio documents" combo box architecture from 0.1.x
+# is gone entirely. A new SharedAudioClipboard, managed Tauri state, lets
+# Copy in one editor window and Paste in another share audio data across
+# separate webviews, which could never happen with a plain JS module
+# variable once each document became its own window.
+#
+# windows (0.1.6 onward, unchanged in 0.2.0): "Open Audio" always shows
+# Windows' classic Explorer-style multi-select "Open" dialog via the plain,
+# non-COM GetOpenFileNameW API (OFN_EXPLORER | OFN_ALLOWMULTISELECT) — see
+# pick_files_native in src/main.rs, completely unchanged by the 0.2.0
+# window-architecture rebuild; only what happens with the paths it returns
+# is different (one new editor window per path, instead of reading every
+# file's bytes into one single-webview response). The dialog hook
+# (OFN_ENABLEHOOK/lpfnHook) and window subclass on the File Name control
+# that intercepts Ctrl+V to expand a copied Explorer file list (CF_HDROP)
+# into GetOpenFileNameW's own quoted multi-name syntax are preserved as-is
+# — see the extensive doc comment above pick_files_native for the full
+# mechanism and what is and isn't verified about it. Feature list
+# (Win32_UI_WindowsAndMessaging, Win32_UI_Shell, Win32_System_DataExchange,
+# Win32_System_Ole, Win32_UI_Controls_Dialogs) is unchanged from 0.1.10,
+# since none of this Windows-specific code was touched.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -56,7 +59,7 @@ serde_json = "1"
 
 # Windows-only: the native "Open Audio" picker, its live paste
 # interception, and clipboard file-list reading (see pick_files_native,
-# open_dialog_hook_proc, paste_subclass_proc, and read_clipboard_file_list
+# open_dialog_hook_proc, paste_subclass_proc, and read_clipboard_diagnosed
 # in src/main.rs). Not needed on other platforms, so it's scoped to the
 # windows target rather than pulled in unconditionally.
 [target.'cfg(windows)'.dependencies.windows]

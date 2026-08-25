@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Document - AccessibleAudioStudio Pro</title>
+  <link rel="stylesheet" href="app/css/styles.css" />
+</head>
+<body>
+  <div class="skip-links">
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+  </div>
+
+  <!-- Live regions for status announcements. Visually hidden, always present. -->
+  <div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="alert-announcer" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+  <header class="app-header">
+    <!--
+      This heading IS the document identity for this window — there is no
+      combo box or document list anywhere in the 0.2.0 architecture, so
+      this text (kept in sync with the real OS window title by
+      editorWindow.js's updateWindowTitle()) is the one, single-source-of-
+      truth answer to "which document is this." tabindex="-1" so focus can
+      land here right after the document finishes loading, per this app's
+      existing "focus a heading or status element after a workflow step
+      completes, never back into an unlabeled field" convention.
+    -->
+    <h1 id="document-heading" tabindex="-1">Loading audio document…</h1>
+  </header>
+
+  <main id="main-content" tabindex="-1">
+    <section class="panel">
+      <p id="position-info"></p>
+      <p id="selection-info"></p>
+
+      <h2>Navigate and Select</h2>
+      <div class="button-row">
+        <button type="button" data-nav="-10">Back 10 Seconds</button>
+        <button type="button" data-nav="-1">Back 1 Second</button>
+        <button type="button" data-nav="-0.1">Back 100 Milliseconds</button>
+        <button type="button" data-nav="0.1">Forward 100 Milliseconds</button>
+        <button type="button" data-nav="1">Forward 1 Second</button>
+        <button type="button" data-nav="10">Forward 10 Seconds</button>
+      </div>
+      <div class="button-row">
+        <button type="button" id="jump-doc-beginning-button">Jump to Beginning</button>
+        <button type="button" id="jump-doc-end-button">Jump to End</button>
+        <button type="button" id="announce-doc-position-button">Announce Current Position</button>
+      </div>
+      <div class="button-row">
+        <button type="button" id="set-selection-start-button">Set Selection Start</button>
+        <button type="button" id="set-selection-end-button">Set Selection End</button>
+        <button type="button" id="select-all-button">Select All</button>
+        <button type="button" id="clear-selection-button">Clear Selection</button>
+        <button type="button" id="announce-selection-button">Announce Selection</button>
+      </div>
+      <div class="button-row">
+        <button type="button" id="editor-play-pause-button">Play</button>
+        <button type="button" id="editor-preview-selection-button">Preview Selection</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Edit</h2>
+      <div class="button-row">
+        <button type="button" id="cut-button">Cut (Ctrl+X)</button>
+        <button type="button" id="copy-button">Copy (Ctrl+C)</button>
+        <button type="button" id="paste-button">Paste (Ctrl+V)</button>
+        <button type="button" id="delete-selection-button">Delete Selection</button>
+        <button type="button" id="trim-button">Trim to Selection</button>
+        <button type="button" id="undo-button">Undo (Ctrl+Z)</button>
+        <button type="button" id="redo-button">Redo (Ctrl+Y)</button>
+      </div>
+      <p>
+        Copy and Cut here can be pasted into any other open
+        AccessibleAudioStudio Pro editor window — switch with Alt+Tab, then
+        Paste there.
+      </p>
+    </section>
+
+    <section class="panel">
+      <h2>Save</h2>
+      <div class="button-row">
+        <button type="button" id="save-audio-button">Save (Ctrl+S)</button>
+        <button type="button" id="save-audio-as-button">Save As… (Ctrl+Shift+S)</button>
+      </div>
+
+      <div id="save-as-form" hidden class="save-panel">
+        <h3 id="save-as-heading">Save Audio As</h3>
+        <label for="save-as-name-input">File name</label>
+        <input type="text" id="save-as-name-input" />
+        <label for="save-as-format-select">Format</label>
+        <select id="save-as-format-select">
+          <option value="wav">WAV</option>
+          <option value="mp3">MP3</option>
+        </select>
+        <div class="button-row">
+          <button type="button" id="confirm-save-as-button">Save</button>
+          <button type="button" id="cancel-save-as-button">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.2.0.</p>
+
+    <details>
+      <summary>Keyboard Shortcuts</summary>
+      <ul>
+        <li>Ctrl+X — Cut</li>
+        <li>Ctrl+C — Copy</li>
+        <li>Ctrl+V — Paste</li>
+        <li>Ctrl+Z — Undo</li>
+        <li>Ctrl+Y — Redo</li>
+        <li>Ctrl+S — Save</li>
+        <li>Ctrl+Shift+S — Save As</li>
+      </ul>
+      <p>Shortcuts do not work while typing in a text field, and every visible button always works as an alternative.</p>
+    </details>
+
+    <details>
+      <summary>Keyboard Shortcut Diagnostics (Help)</summary>
+      <p>
+        If a keyboard shortcut doesn't seem to work, check here after pressing it. This reports
+        whether the keystroke reached this window and what happened as a result.
+      </p>
+      <p id="diagnostics-last-shortcut">No shortcut received yet.</p>
+    </details>
+  </footer>
+
+  <script src="app/js/vendor/lame.min.js"></script>
+  <script type="module" src="app/js/editorWindow.js"></script>
+</body>
+</html>

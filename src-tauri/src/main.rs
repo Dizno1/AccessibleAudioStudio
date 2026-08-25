@@ -8,41 +8,6 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-/// One file the picker returned and that this command successfully read
-/// from disk. `data` is the raw file bytes; the frontend wraps this
-/// directly in a `File` object (see app/js/audioEditorController.js),
-/// exactly as it already does for files picked through the browser-only
-/// `<input type="file">` fallback, so nothing downstream of that needs to
-/// know which picker was used.
-#[derive(Serialize)]
-struct PickedAudioFile {
-    name: String,
-    path: String,
-    data: Vec<u8>,
-}
-
-/// Everything the frontend's Open Audio Diagnostics panel needs to show
-/// exactly how many files survived each stage.
-#[derive(Serialize)]
-struct PickAudioFilesResult {
-    dialog_launched: bool,
-    win32_multi_select: bool,
-    wm_paste_received: bool,
-    open_clipboard_succeeded: bool,
-    open_clipboard_error: u32,
-    cf_hdrop_available: bool,
-    available_clipboard_formats: Vec<u32>,
-    get_clipboard_data_succeeded: bool,
-    drag_query_file_count: u32,
-    paste_hdrop_detected: bool,
-    paste_hdrop_file_count: usize,
-    paste_hdrop_file_names: Vec<String>,
-    paths_supplied_to_dialog: usize,
-    native_dialog_count: usize,
-    files: Vec<PickedAudioFile>,
-    read_errors: Vec<String>,
-}
-
 // A generous buffer for the Explorer-style multi-select return value.
 #[cfg(windows)]
 const FILE_BUFFER_LEN: usize = 65536;
@@ -670,39 +635,162 @@ struct PasteDiagnostics {
     hdrop_file_names: Vec<String>,
 }
 
-/// Always shows the native multi-select Open dialog, then reads every
-/// resulting file's bytes on the Rust side in one round trip. A file
-/// that fails to read is recorded in `read_errors` rather than aborting
-/// the whole selection.
+/// ---------------------------------------------------------------------
+/// 0.2.0: multi-window architecture
+/// ---------------------------------------------------------------------
+///
+/// `pick_and_read_audio_files` above (0.1.4–0.1.10) read every selected
+/// file's bytes into one response for a single webview that managed
+/// multiple documents internally. 0.2.0 replaces the window model
+/// entirely — every audio document now gets its own real Tauri window —
+/// so that command is removed. `pick_files_native` itself (the dialog,
+/// the hook, the `hwndOwner` fix, everything hard-won about actually
+/// getting real paths out of Windows) is completely unchanged and is
+/// still exactly what shows the Open Audio dialog; only what happens
+/// with the paths it returns is different: instead of reading every
+/// file's bytes immediately, each valid path gets its own new editor
+/// window, and that window reads its own single file's bytes once it
+/// exists, via `get_editor_init_info` below.
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+
+use serde::Deserialize;
+
+static NEXT_WINDOW_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_UNTITLED_NUMBER: AtomicU32 = AtomicU32::new(1);
+
+/// Mirrors app/js/audioCodec.js's own SUPPORTED_AUDIO_EXTENSIONS list.
+/// The two can't share a single source of truth in this build-step-free
+/// project, so this comment is the pointer to keep them in sync if either
+/// ever changes.
+const SUPPORTED_EXTENSIONS: [&str; 5] = ["wav", "mp3", "m4a", "flac", "ogg"];
+
+fn is_supported_extension(path: &std::path::Path) -> bool {
+    path.extension()
+        .map(|e| SUPPORTED_EXTENSIONS.contains(&e.to_string_lossy().to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// What a newly-created editor window should load once it's ready to ask
+/// for it. Registered here (keyed by the new window's own label) at the
+/// moment the window is created, rather than encoded into the window's
+/// URL — window labels are already unique and stable, and this avoids
+/// needing to percent-encode arbitrary Windows paths (spaces, backslashes,
+/// non-ASCII filenames) into a URL query string at all.
+enum PendingEditorSource {
+    ExistingFile(PathBuf),
+    NewEmpty { display_number: u32 },
+}
+
+struct PendingEditorSources(Mutex<HashMap<String, PendingEditorSource>>);
+
+/// What `get_editor_init_info` hands back to a newly-opened editor
+/// window: either the bytes of the file it should open, or the display
+/// name for a fresh empty ("New Audio") document.
+#[derive(Serialize)]
+struct EditorInitInfo {
+    kind: String, // "file" | "new"
+    name: String,
+    path: Option<String>,
+    data: Option<Vec<u8>>,
+}
+
+/// Everything Open Audio Diagnostics needs, now reported in terms of
+/// windows opened rather than files decoded in-page — the underlying
+/// dialog/clipboard-paste diagnostics are unchanged from 0.1.9/0.1.10.
+#[derive(Serialize)]
+struct OpenAudioWindowsResult {
+    dialog_launched: bool,
+    win32_multi_select: bool,
+    wm_paste_received: bool,
+    open_clipboard_succeeded: bool,
+    open_clipboard_error: u32,
+    cf_hdrop_available: bool,
+    available_clipboard_formats: Vec<u32>,
+    get_clipboard_data_succeeded: bool,
+    drag_query_file_count: u32,
+    paste_hdrop_detected: bool,
+    paste_hdrop_file_count: usize,
+    paste_hdrop_file_names: Vec<String>,
+    paths_supplied_to_dialog: usize,
+    native_dialog_count: usize,
+    windows_opened: usize,
+    skipped_unsupported: usize,
+    window_open_errors: Vec<String>,
+}
+
+fn register_pending_source(
+    pending: &tauri::State<'_, PendingEditorSources>,
+    label: &str,
+    source: PendingEditorSource,
+) -> Result<(), String> {
+    let mut map = pending
+        .0
+        .lock()
+        .map_err(|_| "Could not access pending editor window state.".to_string())?;
+    map.insert(label.to_string(), source);
+    Ok(())
+}
+
+/// Creates one new editor window for an already-selected, already
+/// extension-validated file path. The window loads `editor.html`, which
+/// calls `get_editor_init_info` (using its own window label, which this
+/// function has just registered a pending source for) to fetch its file
+/// once it's ready — this function itself never reads the file.
+fn open_editor_window_for_path(
+    app: &tauri::AppHandle,
+    pending: &tauri::State<'_, PendingEditorSources>,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let id = NEXT_WINDOW_ID.fetch_add(1, Ordering::SeqCst);
+    let label = format!("editor-{}", id);
+    register_pending_source(pending, &label, PendingEditorSource::ExistingFile(path.to_path_buf()))?;
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let title = format!("{} - AccessibleAudioStudio Pro", name);
+
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("editor.html".into()))
+        .title(title)
+        .inner_size(900.0, 750.0)
+        .min_inner_size(640.0, 480.0)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Shows the native Open Audio dialog (via `pick_files_native`, entirely
+/// unchanged) and creates one editor window per supported-extension path
+/// it returns. An unsupported file is skipped, exactly as the previous
+/// single-window architecture skipped it, before ever creating a window
+/// for it — never opened, never counted as an error.
 #[tauri::command]
-async fn pick_and_read_audio_files(app: tauri::AppHandle) -> Result<PickAudioFilesResult, String> {
+async fn open_audio_windows(
+    app: tauri::AppHandle,
+    pending: tauri::State<'_, PendingEditorSources>,
+) -> Result<OpenAudioWindowsResult, String> {
     let (paths, paste_diagnostics) = pick_files_native(&app)?;
     let native_dialog_count = paths.len();
 
-    let mut files = Vec::with_capacity(paths.len());
-    let mut read_errors = Vec::new();
+    let mut windows_opened = 0usize;
+    let mut skipped_unsupported = 0usize;
+    let mut window_open_errors = Vec::new();
 
     for path in paths {
-        let path_string = path.to_string_lossy().to_string();
-        match fs::read(&path) {
-            Ok(data) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path_string.clone());
-                files.push(PickedAudioFile {
-                    name,
-                    path: path_string,
-                    data,
-                });
-            }
-            Err(err) => {
-                read_errors.push(format!("{}: {}", path_string, err));
-            }
+        if !is_supported_extension(&path) {
+            skipped_unsupported += 1;
+            continue;
+        }
+        match open_editor_window_for_path(&app, &pending, &path) {
+            Ok(()) => windows_opened += 1,
+            Err(e) => window_open_errors.push(format!("{}: {}", path.display(), e)),
         }
     }
 
-    Ok(PickAudioFilesResult {
+    Ok(OpenAudioWindowsResult {
         dialog_launched: true,
         win32_multi_select: cfg!(windows),
         wm_paste_received: paste_diagnostics.wm_paste_received,
@@ -717,9 +805,133 @@ async fn pick_and_read_audio_files(app: tauri::AppHandle) -> Result<PickAudioFil
         paste_hdrop_file_names: paste_diagnostics.hdrop_file_names,
         paths_supplied_to_dialog: paste_diagnostics.hdrop_file_count,
         native_dialog_count,
-        files,
-        read_errors,
+        windows_opened,
+        skipped_unsupported,
+        window_open_errors,
     })
+}
+
+/// Creates one new editor window for an empty ("New Audio") document,
+/// titled "Untitled Audio N" with N incrementing across the whole running
+/// application (not per-window, not reused after a window closes) —
+/// matching the same numbering `AudioDocument` already used in the
+/// single-window architecture, now driven from Rust since window titles
+/// are set at window-creation time rather than via in-page DOM text.
+#[tauri::command]
+async fn open_new_editor_window(
+    app: tauri::AppHandle,
+    pending: tauri::State<'_, PendingEditorSources>,
+) -> Result<(), String> {
+    let display_number = NEXT_UNTITLED_NUMBER.fetch_add(1, Ordering::SeqCst);
+    let id = NEXT_WINDOW_ID.fetch_add(1, Ordering::SeqCst);
+    let label = format!("editor-{}", id);
+    register_pending_source(
+        &pending,
+        &label,
+        PendingEditorSource::NewEmpty { display_number },
+    )?;
+
+    let title = format!("Untitled Audio {} - AccessibleAudioStudio Pro", display_number);
+
+    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App("editor.html".into()))
+        .title(title)
+        .inner_size(900.0, 750.0)
+        .min_inner_size(640.0, 480.0)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Called by an editor window itself, once it has loaded, using its own
+/// window label (via the auto-injected `tauri::WebviewWindow` parameter)
+/// to look up and consume the pending source registered for it — reading
+/// the file from disk here, on demand, rather than earlier when the
+/// window was merely created. A file that no longer exists, or can't be
+/// read (moved, deleted, permissions changed between selection and this
+/// call) surfaces as a normal `Err`, for the editor window's own JS to
+/// announce, rather than blocking every other window from opening.
+#[tauri::command]
+async fn get_editor_init_info(
+    window: tauri::WebviewWindow,
+    pending: tauri::State<'_, PendingEditorSources>,
+) -> Result<EditorInitInfo, String> {
+    let label = window.label().to_string();
+    let source = {
+        let mut map = pending
+            .0
+            .lock()
+            .map_err(|_| "Could not access pending editor window state.".to_string())?;
+        map.remove(&label)
+    };
+
+    match source {
+        Some(PendingEditorSource::ExistingFile(path)) => {
+            let data = fs::read(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+            Ok(EditorInitInfo {
+                kind: "file".to_string(),
+                name,
+                path: Some(path.to_string_lossy().to_string()),
+                data: Some(data),
+            })
+        }
+        Some(PendingEditorSource::NewEmpty { display_number }) => Ok(EditorInitInfo {
+            kind: "new".to_string(),
+            name: format!("Untitled Audio {}", display_number),
+            path: None,
+            data: None,
+        }),
+        None => Err(
+            "This editor window has no registered source. It may have been reloaded after already opening once."
+                .to_string(),
+        ),
+    }
+}
+
+/// Shared, Rust-side audio clipboard — the mechanism that makes
+/// File A → Ctrl+C → Alt+Tab → File B → Ctrl+V possible at all, now that
+/// each document lives in its own separate webview and can no longer
+/// share an ordinary JavaScript module-level variable the way the
+/// single-window architecture's `audioClipboard.js` did. One document's
+/// worth of raw decoded audio (per-channel `Float32Array` data, plus its
+/// sample rate) is stored here; `documentManager.js`'s destination-format
+/// reconciliation on paste is unchanged and still happens entirely in
+/// JavaScript, using whatever sample rate/channel count this payload
+/// reports against the pasting document's own.
+#[derive(Serialize, Deserialize, Clone)]
+struct SharedClipboardPayload {
+    sample_rate: u32,
+    channel_data: Vec<Vec<f32>>,
+}
+
+#[derive(Default)]
+struct SharedAudioClipboard(Mutex<Option<SharedClipboardPayload>>);
+
+#[tauri::command]
+async fn set_shared_audio_clipboard(
+    payload: SharedClipboardPayload,
+    clipboard: tauri::State<'_, SharedAudioClipboard>,
+) -> Result<(), String> {
+    let mut guard = clipboard
+        .0
+        .lock()
+        .map_err(|_| "Could not access the shared audio clipboard.".to_string())?;
+    *guard = Some(payload);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_shared_audio_clipboard(
+    clipboard: tauri::State<'_, SharedAudioClipboard>,
+) -> Result<Option<SharedClipboardPayload>, String> {
+    let guard = clipboard
+        .0
+        .lock()
+        .map_err(|_| "Could not access the shared audio clipboard.".to_string())?;
+    Ok(guard.clone())
 }
 
 fn main() {
@@ -728,9 +940,20 @@ fn main() {
         // launch, and saves it automatically as the user resizes/moves the
         // window or closes the app. This is the "remember previous size and
         // position when practical" requirement — handled entirely by this
-        // plugin, no custom persistence code needed.
+        // plugin, no custom persistence code needed. Applies per-window,
+        // to every editor window as well as the main Recording Studio
+        // window, since it's registered globally here rather than scoped
+        // to one window label.
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .invoke_handler(tauri::generate_handler![pick_and_read_audio_files])
+        .manage(PendingEditorSources(Mutex::new(HashMap::new())))
+        .manage(SharedAudioClipboard::default())
+        .invoke_handler(tauri::generate_handler![
+            open_audio_windows,
+            open_new_editor_window,
+            get_editor_init_info,
+            set_shared_audio_clipboard,
+            get_shared_audio_clipboard,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running AccessibleAudioStudio Pro");
 }

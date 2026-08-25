@@ -12,7 +12,9 @@
 // can open. A file whose extension isn't on that list is never handed to
 // the decoder at all (see isSupportedAudioExtension); a file that IS a
 // supported extension but still fails to decode is reported as a normal
-// per-file failure by the caller (see documentManager.js).
+// per-file failure by the caller (as of 0.2.0, main.rs's open_audio_windows
+// filters unsupported extensions before ever creating a window, and
+// editorWindow.js reports a decode failure for the one file it owns).
 //
 // Encoding: WAV is written directly (uncompressed PCM, a well-documented
 // and completely reliable format to hand-produce). MP3 is written using

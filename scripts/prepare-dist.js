@@ -35,6 +35,7 @@ const DIST = path.join(ROOT, "dist");
 // exclude list, so nothing new at the repo root can accidentally leak in.
 const INCLUDE = [
   "index.html",
+  "editor.html",
   "app", // app/css and app/js
 ];
 

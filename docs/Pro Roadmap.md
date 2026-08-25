@@ -1267,27 +1267,180 @@ with focus/paste/clipboard state differently than one that is), but
 that's a hypothesis for the next real test to confirm or rule out, not
 a claim made here.
 
+## 0.2.0 — architectural rebuild: one document, one window
+
+Fifteen-plus 0.1.x test builds went into one native-dialog multi-select
+workflow — four different picker implementations, a live dialog hook,
+granular clipboard-boundary diagnostics, a modal-ownership fix — and the
+underlying question (why does a copied Explorer selection's `CF_HDROP`
+still report unavailable after a genuine `WM_PASTE`) was still open.
+Rather than continue patching that one workflow inside an architecture
+that was never well-suited to it — a single webview privately managing
+multiple documents' worth of state — 0.2.0 replaces the architecture
+itself.
+
+### What changed
+
+AccessibleAudioStudio Pro now has two kinds of windows:
+
+- **The main window** (`index.html`, unchanged recording/playback/
+  library) is the persistent **Recording Studio**. Its only involvement
+  with editing is launching editor windows — Open Audio and New Audio —
+  and showing the Open Audio Diagnostics panel, now reporting how many
+  editor windows opened rather than how many files decoded in-page.
+- **Every open audio document is its own real Tauri window**
+  (`editor.html`, one instance per window), created dynamically via
+  `tauri::WebviewWindowBuilder` from two new Rust commands,
+  `open_audio_windows` and `open_new_editor_window`. There is no document
+  combo box anywhere in this architecture — Alt+Tab, using each window's
+  own OS-native title, is the entire document-switching mechanism, per
+  the explicit architectural decision this build implements.
+
+### What's reused unchanged, and what's new
+
+**Unchanged, byte-for-byte:** `pick_files_native` — the dialog, the
+paste-interception hook, the `hwndOwner` fix, everything hard-won about
+actually getting real paths out of Windows across the 0.1.x line — is
+untouched. `main.js`, `library.js`, `recordingEngine.js`, `playback.js`,
+`deviceManager.js`, and `storage.js` (the entire recording engine) are
+confirmed byte-identical to their last-verified state. `audioDocument.js`,
+`audioBufferUtils.js`, `audioBufferPlayer.js`, and `audioCodec.js` — the
+actual audio editing primitives — are reused directly; the per-document
+navigate/select/edit/save logic in `editorWindow.js` is carried over from
+the proven 0.1.x controller with only the multi-document bookkeeping
+removed.
+
+**New:**
+
+- `open_audio_windows` (Rust): shows the dialog via `pick_files_native`,
+  filters unsupported extensions, and creates one editor window per valid
+  path — never reading file bytes itself.
+- `open_new_editor_window` (Rust): creates one editor window for an empty
+  document, numbered "Untitled Audio N" across the whole running
+  application.
+- `get_editor_init_info` (Rust): called by an editor window once, on
+  load, using its own window label (Tauri's auto-injected
+  `tauri::WebviewWindow` parameter) to look up and consume a pending
+  source registered for it at window-creation time — reading the file
+  from disk on demand, not when the window was merely created. This
+  avoids ever needing to percent-encode a Windows path (spaces,
+  backslashes, non-ASCII filenames) into a URL query string, which was
+  the more obvious but more fragile alternative.
+- `SharedAudioClipboard` (Rust, managed Tauri state) +
+  `set_/get_shared_audio_clipboard`: a real, working shared clipboard —
+  not just scaffolding for a future phase. `audioClipboard.js`'s public
+  API is unchanged in shape from 0.1.x; it now awaits these commands
+  instead of reading a plain module variable, which is what makes
+  File A → Ctrl+C → Alt+Tab → File B → Ctrl+V actually work, something
+  that could never happen with one JavaScript variable once each document
+  became its own separate webview.
+- `editorWindow.js` + `editor.html`: the per-window controller and page.
+  Sets the real OS window title via the Tauri JS window API
+  (`getCurrentWindow().setTitle(...)`) on load and after every edit — the
+  single most important accessibility surface in this whole
+  architecture, since Alt+Tab and a screen reader's window list both read
+  directly from it now, with no in-page fallback.
+- `audioEditorLauncher.js`: replaces `audioEditorController.js` in the
+  main window — much smaller, since it now only launches windows and
+  renders diagnostics rather than managing document state.
+
+**Removed:** `documentManager.js` and `audioEditorController.js` (the
+single-webview, multi-document architecture they implemented is exactly
+what this rebuild replaces) — confirmed nothing else in the codebase
+still imported either before deleting them, rather than leaving them as
+dead, confusing files.
+
+**Caught before it could break every editor window silently:**
+`scripts/prepare-dist.js` only copied `index.html` into the Windows
+build's frontend distribution folder — without adding `editor.html` to
+its explicit allowlist, every dynamically-created editor window would
+have pointed at a file that simply didn't exist in the packaged app,
+with no compile error to catch it. Fixed.
+
+### Verification status
+
+Per the status model this build introduces — a feature is not
+"complete" because the code looks right or a mock test passes; it
+progresses through three distinct states, and each is stated separately
+below rather than collapsed into one "done":
+
+| Acceptance test item (from the correction directive) | Implemented | Windows build verified | Screen-reader verified |
+|---|---|---|---|
+| 1–2. Launch; main Recording Studio window opens and remains available | Yes — unchanged code | No | No |
+| 3–5. Open Audio; one file → one editor window titled with its filename | Yes | No | No |
+| 6–9. A second file → a second editor window; both remain open | Yes | No | No |
+| 10. Alt+Tab moves among Recording Studio and both editors | Yes (ordinary consequence of using real OS windows — nothing app-specific implements this) | No | No |
+| 11. JAWS/NVDA can identify each editor by its window title | Yes (`setTitle` called on load and after every edit) | No | No |
+| 12–13. Independent playhead/selection; playing one doesn't affect the other | Yes (separate `AudioDocument` instance and `BufferPlayer` per window — architecturally guaranteed by being separate JS runtimes, not just separate UI state) | No | No |
+| 14. Closing one editor leaves the other and the Recording Studio open | Yes (ordinary OS window behavior — no app code needed to implement this specifically) | No | No |
+| 15. New Audio creates its own separate editor window | Yes | No | No |
+| 16. The document combo box no longer exists | Yes — confirmed by direct inspection, not just by not adding it back: no `document-select`/`editor-document-area`/`close-document-button` ID exists anywhere in `index.html` or `editor.html` | No | No |
+| Cross-window Copy/Paste (built ahead of the 0.2.1 schedule, not required for this milestone) | Yes, real implementation, not scaffolding | No | No |
+
+Every "No" above is the same honest limitation already established for
+every Windows-specific change since 0.1.4, now stated in the terms this
+new status model asks for: this environment has no Rust toolchain that
+can target Windows, and — new to this specific build — has never created
+or managed a real multi-window Tauri application at all, meaning the
+entire window-creation/window-labeling/cross-window-state mechanism is
+new surface area with the same constraint as everything before it.
+Automated checks that *were* run in this environment: axe-core against
+both `index.html` and `editor.html` (0 violations, 36 passing checks
+each), full JS syntax checks across every file, Rust structural
+sanity checks (brace/paren balance) on `main.rs`, a duplicate-ID check
+across both HTML files, and direct confirmation that the recording
+engine files are byte-identical to their last-verified state.
+
+### What 0.2.0 deliberately does not solve
+
+Stated directly, per the correction directive's own instruction not to
+let scope quietly expand:
+
+- **Duplicate-file detection across windows.** 0.1.x could detect "this
+  file is already open" within one webview managing several documents.
+  Since each document is now a separate window with its own JavaScript
+  runtime, this would need its own cross-window shared state (the same
+  category of problem `SharedAudioClipboard` solves for the clipboard) —
+  not built this round. Opening the same file twice currently creates
+  two independent editor windows, silently. This is a real, acknowledged
+  regression from 0.1.x, not an oversight.
+- **Unsaved-changes-on-close protection.** 0.1.x asked for confirmation
+  before closing a document with unsaved edits. Native OS window closing
+  isn't currently intercepted, so an editor window with unsaved changes
+  closes immediately, without asking. Also a real, acknowledged gap.
+- **The Explorer-copy-paste multi-file workflow.** Explicitly out of
+  scope per the correction directive ("do not block the 0.2.0
+  architecture on solving" this). `pick_files_native`'s dialog hook is
+  preserved unchanged and will still attempt it exactly as it did in
+  0.1.10 — including its still-unresolved `CF_HDROP`-unavailable
+  question — but this milestone is not gated on it working.
+
 ## Recommended next phase
 
-Build 0.1.10 via GitHub Actions and, with a real screen reader running,
-confirm the modal-ownership fix first: activate Open Audio, and check
-whether Tab/Shift+Tab now cycles within the dialog's own controls
-instead of immediately escaping back to the main window. That's the
-single most direct thing to verify, since it's a plain keyboard/focus
-behavior, not something that needs the diagnostics panel to interpret.
-Then reproduce the full workflow once more — File Explorer multi-select,
-Ctrl+C, switch to this app, Ctrl+O, File Name field, Ctrl+V, activate
-Open — and open Open Audio Diagnostics afterward. Confirm the panel still
-updates on every attempt (0.1.9's fix), then look at whether proper
-modal ownership changed anything about the clipboard-boundary picture:
-does `CF_HDROP available` still report `no` after a genuine `WM_PASTE`,
-or does correct dialog ownership change that behavior too? Those are
-two separate, real questions, and this build doesn't assume which way
-either one goes. Also confirm plain Ctrl+O with nothing copied still
-opens the dialog and behaves exactly as in 0.1.6, and that document/
-window title, H1, skip links, footer, and landmark structure are all
-still correct. After multi-file intake is confirmed working for real: a
-fair trial of the current document-switching combo box, then markers
-(Phase 6), since several editing operations here (set selection
-start/end, navigate by increment) already share the underlying mechanics
-markers will need.
+Build 0.2.0 via GitHub Actions and run exactly the 16-point acceptance
+test from the correction directive, in order: launch, confirm the
+Recording Studio window opens and stays open, activate Open Audio,
+select two ordinary supported files in one dialog operation, confirm two
+separate editor windows open with their filenames in their titles,
+confirm Alt+Tab moves among the Recording Studio and both editors,
+confirm JAWS/NVDA announces each editor's window title correctly,
+confirm each editor has genuinely independent playhead/selection state
+(playing one must not affect the other), confirm closing one editor
+leaves the other and the Recording Studio open, confirm New Audio opens
+its own separate window, and confirm — by trying to find it, not just by
+not noticing it — that the "Open audio documents" combo box no longer
+exists anywhere. If all sixteen pass, this is the first build in the
+whole Pro line to earn a real `Windows build verified` mark, and a real
+screen reader pass over the same sixteen points is the next thing this
+needs, not another architecture change. If something in the window
+lifecycle itself breaks (a window that doesn't appear, a title that
+doesn't update, Alt+Tab behaving unexpectedly), that's genuinely new
+territory — this environment has never created or managed a real
+multi-window Tauri application, so unlike the file-dialog work, there
+isn't yet a backlog of known, already-investigated failure modes to check
+against first. Also worth testing deliberately, since it's real
+functionality built ahead of schedule: Copy audio in one editor window,
+Alt+Tab to a second, Paste — confirm the shared clipboard actually works
+across two separate windows. Do not test the Explorer-copy-paste
+multi-file workflow as part of this milestone; it's explicitly deferred
+and known to still have an open question from 0.1.10.

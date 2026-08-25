@@ -21,7 +21,7 @@ import { renderLibrary, focusRecordingHeading } from "./library.js";
 import { formatDurationNatural } from "./timeFormat.js";
 import { initShortcutService, registerAction } from "./shortcutService.js";
 import { onShortcutEvent, getLastShortcutEvent } from "./shortcutDiagnostics.js";
-import { initAudioEditor, registerEditorShortcutActions } from "./audioEditorController.js";
+import { initAudioEditorLauncher, registerAudioEditorLauncherShortcuts } from "./audioEditorLauncher.js";
 
 // ---------------------------------------------------------------------
 // Element references
@@ -100,8 +100,11 @@ async function init() {
 
   // Audio Editor (Pro) is a self-contained module: it owns its own DOM
   // wiring and shortcut actions, and never touches recording state above.
-  initAudioEditor();
-  registerEditorShortcutActions();
+  // As of 0.2.0 it only launches editor windows (open_audio_windows /
+  // open_new_editor_window) — the actual per-document editing lives
+  // entirely in editorWindow.js, in each of those separate windows.
+  initAudioEditorLauncher();
+  registerAudioEditorLauncherShortcuts();
 
   state.capabilities = getBrowserCapabilities();
   if (!state.capabilities.isFullySupported) {

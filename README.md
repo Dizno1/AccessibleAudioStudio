@@ -23,21 +23,22 @@ A user can currently:
 
 See `docs/Roadmap.md` for the complete list of what was built, known limitations, and the recommended next phase.
 
-## AccessibleAudioStudio Pro: Audio Editor (new)
+## AccessibleAudioStudio Pro: Audio Editor (0.2.0 architecture)
 
-A new "Audio Editor (Pro)" panel adds file-based audio editing alongside
-the recording workflow above, without changing it. A user can currently:
+As of 0.2.0, AccessibleAudioStudio Pro has two kinds of windows: the
+persistent main **Recording Studio** window (unchanged recording,
+playback, and Recording Library), and one independent **editor window**
+per open audio document — real, separate OS windows, not tabs or panels
+inside one page. A user can currently:
 
-- Open one or several existing audio files at once (WAV, MP3, M4A, FLAC, OGG — mixed formats in a single Open operation), or create a New Audio document. In the packaged desktop app, this uses Tauri's own native file dialog (not just an HTML file input) specifically so multi-file selection is reliable — see "Application identity" below for the plugins this requires
-- Work with multiple open audio documents at once, each with its own accessible title
-- Navigate precisely by 10 seconds, 1 second, or 100 milliseconds, with position and selection always spoken in natural language ("1 minute 14.250 seconds")
-- Set a selection, preview it, and hear its start/end/duration on demand
-- Cut, Copy, Paste, Delete, Trim to Selection, Select All, Undo, and Redo — including copying audio between two different open documents
-- Have routine format differences (sample rate, mono/stereo) reconciled automatically on paste
-- Save or Save As to an ordinary WAV or MP3 file
-- Get asked before a file that's already open is opened again as a second copy, rather than silently ending up with two copies open
+- Activate Open Audio in the Recording Studio window to show the real native Windows Open dialog; every supported file selected (WAV, MP3, M4A, FLAC, OGG) opens as its own new editor window, titled with its filename (`Interview.mp3 - AccessibleAudioStudio Pro`)
+- Activate New Audio for a fresh empty editor window (`Untitled Audio 1 - AccessibleAudioStudio Pro`, incrementing)
+- Switch between the Recording Studio and any open editor window with Alt+Tab — there is no in-page document list or combo box anywhere in this architecture
+- In each editor window: navigate precisely by 10 seconds, 1 second, or 100 milliseconds, with position and selection always spoken in natural language ("1 minute 14.250 seconds"); set a selection and preview it; Cut, Copy, Paste, Delete, Trim to Selection, Select All, Undo, and Redo; Save or Save As to an ordinary WAV or MP3 file
+- Copy audio in one editor window and Paste it in a different one — Ctrl+C, Alt+Tab, Ctrl+V — via a small shared clipboard on the Rust side, since separate windows no longer share any JavaScript state to hold this in directly
+- Closing one editor window never affects any other open document or the Recording Studio
 
-See `docs/Pro Roadmap.md` for exactly what's implemented vs. deferred against the full 12-phase Pro roadmap, and `docs/Audio Editing (Pro).md` for how it behaves for a keyboard and screen reader user, including known limitations.
+See `docs/Pro Roadmap.md` for exactly what's implemented, what's been verified how (per the `Implemented` / `Windows build verified` / `Screen-reader verified` status model introduced with 0.2.0), and what this architectural milestone deliberately does not attempt yet (duplicate-file detection across windows, unsaved-changes-on-close protection, and the Explorer-copy-paste multi-file workflow the 0.1.x line spent many builds on). See `docs/Audio Editing (Pro).md` for how it behaves for a keyboard and screen reader user.
 
 ## Running the app
 
@@ -70,14 +71,15 @@ app/js/
   shortcutDiagnostics.js   Tracks the last shortcut detected, for the Diagnostics panel
   announcer.js             ARIA live region status/alert announcements
   timeFormat.js             Natural-language duration/date/precise-time formatting
-  audioEditorController.js Audio Editor (Pro): DOM wiring for open/new/save, navigation, selection, editing
-  documentManager.js       Audio Editor (Pro): the set of open audio documents
-  audioDocument.js         Audio Editor (Pro): one open document's state, selection, and undo/redo history
-  audioBufferUtils.js      Audio Editor (Pro): pure AudioBuffer editing operations + format reconciliation
-  audioBufferPlayer.js     Audio Editor (Pro): Web Audio playback of a document or a selection range
-  audioClipboard.js        Audio Editor (Pro): in-application clipboard for Cut/Copy/Paste
-  audioCodec.js            Audio Editor (Pro): decode any supported file; encode WAV/MP3
-  vendor/lame.min.js       Audio Editor (Pro): vendored pure-JS MP3 encoder (see vendor/README.md)
+  audioEditorLauncher.js   Recording Studio window: launches editor windows, renders Open Audio Diagnostics (0.2.0)
+  editorWindow.js          Editor window: one document, navigation/selection/editing/save — one instance per window (0.2.0)
+  audioDocument.js         One open document's state, selection, and undo/redo history
+  audioBufferUtils.js      Pure AudioBuffer editing operations + format reconciliation
+  audioBufferPlayer.js     Web Audio playback of a document or a selection range
+  audioClipboard.js        Shared cross-window clipboard for Cut/Copy/Paste, backed by Rust-side state (0.2.0)
+  audioCodec.js            Decode any supported file; encode WAV/MP3
+  vendor/lame.min.js       Vendored pure-JS MP3 encoder (see vendor/README.md)
+editor.html                Editor window page — loaded once per open audio document (0.2.0)
 docs/
   Vision.md
   Screen Reader First Principles.md
@@ -132,7 +134,7 @@ AccessibleAudioStudio's browser-based application (`index.html` and `app/`) is p
 
 `.github/workflows/build-windows.yml` builds the real installers on a genuine Windows machine (a GitHub-hosted `windows-latest` runner) automatically:
 
-- **Push a Pro version tag** (e.g. `git tag pro-v0.1.10 && git push origin pro-v0.1.10`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
+- **Push a Pro version tag** (e.g. `git tag pro-v0.2.0 && git push origin pro-v0.2.0`) to build both installers and open a **draft** GitHub Release with them attached, ready to review and publish.
 - **Or run it manually** from the Actions tab ("Build Windows Installer" > "Run workflow") to just build and download the installers as workflow artifacts, without creating a release -- useful while testing a change.
 
 This is a real build on a real Windows machine every time -- not a simulation. See `Release/README.md` for the full step-by-step.
@@ -222,9 +224,9 @@ These are already set in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`;
 | Tauri identifier | `org.opendoordesign.accessibleaudiostudio` | `org.opendoordesign.accessibleaudiostudio.pro` |
 | Cargo/package name | `accessibleaudiostudio` | `accessibleaudiostudio-pro` |
 | Window title | AccessibleAudioStudio | AccessibleAudioStudio Pro |
-| Version | 1.0.0 | 0.1.10 (current test build — see "Pro version numbering" below) |
+| Version | 1.0.0 | 0.2.0 (current test build — see "Pro version numbering" below) |
 
-#### Native file dialog (since 0.1.2; six different implementations/additions through 0.1.8)
+#### Native file dialog (since 0.1.2, unchanged by the 0.2.0 rebuild)
 
 "Open Audio" in the packaged desktop app opens the real native Windows
 file picker, instead of relying solely on an HTML `<input type="file"
@@ -315,6 +317,21 @@ previous attempt's own diagnostics actually proved, not a guess:
   honest account of what could and couldn't be verified about it in this
   environment. `windows` crate features `Win32_UI_Controls` and
   `Win32_UI_WindowsAndMessaging` added for this.
+- **0.1.9/0.1.10** — a real diagnostics bug (an early return that skipped
+  the panel update on a cancelled dialog result) and a real modal-
+  ownership bug (`hwndOwner` left NULL) — both fixed without touching the
+  dialog/hook mechanism itself. See `docs/Pro Roadmap.md`.
+- **0.2.0** did not touch this dialog code at all — `pick_files_native`
+  is byte-for-byte the same function that existed in 0.1.10. What changed
+  is what happens with the paths it returns: instead of reading every
+  file's bytes into one response for a single webview to manage
+  internally, each valid path now gets its own real editor window
+  (`open_audio_windows` in `src-tauri/src/main.rs`), which reads its own
+  one file on demand once it exists (`get_editor_init_info`). The
+  dialog's own long-standing open question — why `CF_HDROP` reports
+  unavailable after a genuine Explorer copy — is unresolved and
+  explicitly out of scope for this architectural milestone; see
+  `docs/Pro Roadmap.md`, "What 0.2.0 deliberately does not solve."
 
 #### Pro version numbering
 
@@ -335,7 +352,8 @@ same reason: it lets a bug report like "this happened in 0.1.3 but not
 - `0.1.8` — removed 0.1.7's clipboard-bypass-before-the-dialog (real testing found it produced no dialog and no feedback); replaced it with a live paste interception installed inside the native dialog itself, so Ctrl+O always opens the dialog and Ctrl+V inside it now expands a copied Explorer file list. Went through several real Windows compile failures under this same version number as the dialog-hook code was corrected build over build (see `docs/Pro Roadmap.md` for the full sequence) before finally compiling and running on real Windows for the first time.
 - `0.1.9` — fixed a real bug that made repeated, genuine Open Audio attempts look identical to "never attempted at all" in the diagnostics panel: the frontend silently skipped updating diagnostics whenever the native dialog returned a cancelled/empty result, so a string of cancelled attempts (whatever caused each one to cancel) left the panel in its pristine startup state the whole time. Diagnostics are now recorded synchronously the moment Open Audio is invoked — before the native dialog is even asked to open — and every outcome (opened, cancelled, error, or a hard timeout if the Rust command never returns at all) is now recorded truthfully. See `docs/Pro Roadmap.md`. Also the first build number in this saga to actually match one specific tested binary, per an explicit request to stop reusing "0.1.8" across several materially different builds.
 - `0.1.10` — real testing reported the dialog didn't feel like a genuine modal at all: Shift+Tab immediately left it and returned to the main app window, rather than cycling within the dialog. Every build since 0.1.6 had set `GetOpenFileNameW`'s `hwndOwner` parameter to `HWND::default()` (NULL) instead of the app's real window — with no owner, Windows has no window to establish proper modal ownership against, a direct, plausible explanation for exactly that symptom. Fixed by obtaining the real main window handle from Tauri (`app.get_webview_window("main").hwnd()`) and passing it as the dialog's owner. See `docs/Pro Roadmap.md`.
-- `0.1.11`, … — subsequent test/fix builds
+- `0.2.0` — **architectural rebuild**, not another patch. After fifteen-plus 0.1.x test builds chasing one native-dialog multi-select workflow, the decision was made to stop rescuing that single-window, multi-document architecture and rebuild around the model AccessibleAudioStudio Pro should have had from the start: one persistent main Recording Studio window, and one independent, real Tauri window per open audio document. The "Open audio documents" combo box is gone entirely; Alt+Tab is now the document-switching mechanism, using each window's own OS-native title. See `docs/Pro Roadmap.md` for the full architecture, what's implemented vs. verified, and what was deliberately deferred (cross-window duplicate-file detection, unsaved-changes-on-close protection, and the Explorer-copy-paste multi-file workflow this whole 0.1.x line was chasing — explicitly not solved here, and not blocking this milestone).
+- `0.2.1`, … — subsequent capability builds (shared cross-window Copy/Paste is already implemented as part of 0.2.0's own foundation, ahead of schedule; Save/Save-As dirty-state polish, then the Explorer-copy workflow, are the next planned increments)
 - `0.2.0` — a meaningful new feature milestone (e.g. markers)
 - eventually `1.0.0` — first production Pro release
 
@@ -356,15 +374,15 @@ place to remember to update.
 
 ## GitHub Releases
 
-Pushing a Pro version tag (`git tag pro-v0.1.10 && git push origin pro-v0.1.10`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
+Pushing a Pro version tag (`git tag pro-v0.2.0 && git push origin pro-v0.2.0`) triggers `.github/workflows/build-windows.yml`, which builds both installers on a real Windows runner and opens a **draft** GitHub Release with them already attached -- so most of this process is automatic. Using the `pro-v*` prefix (rather than plain `v*`) keeps Pro's version tags from ever colliding with a free-edition tag like `v1.0.0` in this same repository's tag history. What's left to do by hand:
 
 1. After the workflow finishes, open the draft release on GitHub (Releases tab).
-2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.1.10 (Windows)," and adjust if needed.
+2. Confirm the title is clear, e.g. "AccessibleAudioStudio Pro 0.2.0 (Windows)," and adjust if needed.
 3. Complete the pre-publish checklist in `Release/README.md` -- install and test the actual attached `.msi` on a real Windows machine (or VM) with a screen reader running, including uninstall through Windows Settings -- before publishing. If the free AccessibleAudioStudio is also installed on that machine, confirm both apps still work independently afterward.
 4. Write release notes covering what's new or changed since the last Pro build, any known issues, and which Windows versions were tested.
 5. Publish the release. Keep every previous release's assets attached to its own tagged release rather than overwriting them, so there's a complete version history to link back to or roll back to if needed.
-6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.1.10/AccessibleAudioStudio Pro_0.1.10_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
+6. The published release's asset URLs (e.g. `.../releases/download/pro-v0.2.0/AccessibleAudioStudio Pro_0.2.0_x64_en-US.msi`) are stable direct-download links suitable for linking from OpenDoorDesign.org.
 
 ## Recommended next phase
 
-Build 0.1.9 via GitHub Actions — this environment has no Rust toolchain that can target Windows (confirmed by direct attempt; see `docs/Pro Roadmap.md`). Reproduce the exact same workflow that found the 0.1.8-diag regression: select several audio files in File Explorer, Ctrl+C, switch to AccessibleAudioStudio Pro, Ctrl+O, move to the File Name field, Ctrl+V, activate Open — repeat a few times. First and most important: confirm the Open Audio Diagnostics panel now updates after *every* attempt, including ones where nothing ends up opening — it should never again read "No Open Audio operation has been attempted yet" after Open Audio has genuinely been activated. If it still doesn't update, that's a strong signal the Rust command itself is truly hanging (not just returning a cancelled result), and the new 5-minute invoke timeout should eventually report "Rust command returned to JavaScript: no" — note how long that actually takes on the real machine. If the panel does update on every attempt now (the expected, most likely outcome, since the underlying bug was a JS-side early return that skipped diagnostics on a cancelled result), read "Native dialog result" together with the full clipboard-boundary breakdown from 0.1.8-diag to see exactly why the dialog is resolving as cancelled — most likely `CF_HDROP available: no` after a successful `WM_PASTE`, per the very first real diagnostic data. Also confirm plain Ctrl+O with nothing copied still opens the dialog and behaves exactly as in 0.1.6, and that document/window title, H1, skip links, footer, and landmark structure are all still correct. See `docs/Pro Roadmap.md` for the full mechanism and an honest account of what could and couldn't be verified. After multi-file opening is confirmed working for real: a fair trial of the current document-switching combo box, then markers (Phase 6).
+Build 0.2.0 via GitHub Actions and run the acceptance test exactly as specified: launch, confirm the main Recording Studio window opens, activate Open Audio, select two ordinary supported files in one native dialog operation, confirm two separate editor windows open with their filenames in their titles, confirm Alt+Tab moves among the Recording Studio and both editors, confirm each has independent playhead/selection state and closing one leaves the other and the Recording Studio open, confirm New Audio opens its own window, and confirm the "Open audio documents" combo box no longer exists anywhere. This environment has no Rust toolchain that can target Windows and has never created or managed a real multi-window Tauri application — confirmed directly, not assumed — so every part of this milestone is unverified until it runs there; see `docs/Pro Roadmap.md` for exactly what's `Implemented` versus `Windows build verified` versus `Screen-reader verified`, per the status model this build introduces. Also worth testing, since it's real, working functionality built ahead of the 0.2.1 schedule rather than deferred: select audio in one editor window, Ctrl+C, Alt+Tab to a second editor window, Ctrl+V — the shared Rust-side clipboard should make this work across windows, which was never possible in the single-webview architecture. Do not test the Explorer-copy-paste multi-file workflow as part of this milestone — it's explicitly deferred, unrelated to this rebuild, and known to still have an open question (`CF_HDROP` reporting unavailable) from 0.1.10.

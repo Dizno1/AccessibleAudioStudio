@@ -119,7 +119,11 @@
 
     <section class="panel">
       <h2 id="editor-heading" tabindex="-1">Audio Editor (Pro)</h2>
-      <p>Open one or more audio files, or start a new empty audio document, to edit and combine audio.</p>
+      <p>
+        Open one or more audio files, or start a new empty audio document. Each one opens in its
+        own separate window with its own full editing controls — switch between them with Alt+Tab,
+        the same way you'd switch between any other open application windows.
+      </p>
 
       <div class="button-row">
         <button type="button" id="open-audio-button">Open Audio… (Ctrl+O)</button>
@@ -133,83 +137,13 @@
         hidden
       />
 
-      <p id="editor-open-status">No audio documents are open.</p>
-
-      <div id="editor-document-area" hidden>
-        <label for="document-select">Open audio documents</label>
-        <select id="document-select"></select>
-
-        <div class="button-row">
-          <button type="button" id="close-document-button">Close Document</button>
-        </div>
-
-        <p id="position-info"></p>
-        <p id="selection-info"></p>
-
-        <h3>Navigate and Select</h3>
-        <div class="button-row">
-          <button type="button" data-nav="-10">Back 10 Seconds</button>
-          <button type="button" data-nav="-1">Back 1 Second</button>
-          <button type="button" data-nav="-0.1">Back 100 Milliseconds</button>
-          <button type="button" data-nav="0.1">Forward 100 Milliseconds</button>
-          <button type="button" data-nav="1">Forward 1 Second</button>
-          <button type="button" data-nav="10">Forward 10 Seconds</button>
-        </div>
-        <div class="button-row">
-          <button type="button" id="jump-doc-beginning-button">Jump to Beginning</button>
-          <button type="button" id="jump-doc-end-button">Jump to End</button>
-          <button type="button" id="announce-doc-position-button">Announce Current Position</button>
-        </div>
-        <div class="button-row">
-          <button type="button" id="set-selection-start-button">Set Selection Start</button>
-          <button type="button" id="set-selection-end-button">Set Selection End</button>
-          <button type="button" id="select-all-button">Select All</button>
-          <button type="button" id="clear-selection-button">Clear Selection</button>
-          <button type="button" id="announce-selection-button">Announce Selection</button>
-        </div>
-        <div class="button-row">
-          <button type="button" id="editor-play-pause-button">Play</button>
-          <button type="button" id="editor-preview-selection-button">Preview Selection</button>
-        </div>
-
-        <h3>Edit</h3>
-        <div class="button-row">
-          <button type="button" id="cut-button">Cut (Ctrl+X)</button>
-          <button type="button" id="copy-button">Copy (Ctrl+C)</button>
-          <button type="button" id="paste-button">Paste (Ctrl+V)</button>
-          <button type="button" id="delete-selection-button">Delete Selection</button>
-          <button type="button" id="trim-button">Trim to Selection</button>
-          <button type="button" id="undo-button">Undo (Ctrl+Z)</button>
-          <button type="button" id="redo-button">Redo (Ctrl+Y)</button>
-        </div>
-
-        <h3>Save</h3>
-        <div class="button-row">
-          <button type="button" id="save-audio-button">Save (Ctrl+S)</button>
-          <button type="button" id="save-audio-as-button">Save As… (Ctrl+Shift+S)</button>
-        </div>
-
-        <div id="save-as-form" hidden class="save-panel">
-          <h4 id="save-as-heading">Save Audio As</h4>
-          <label for="save-as-name-input">File name</label>
-          <input type="text" id="save-as-name-input" />
-          <label for="save-as-format-select">Format</label>
-          <select id="save-as-format-select">
-            <option value="wav">WAV</option>
-            <option value="mp3">MP3</option>
-          </select>
-          <div class="button-row">
-            <button type="button" id="confirm-save-as-button">Save</button>
-            <button type="button" id="cancel-save-as-button">Cancel</button>
-          </div>
-        </div>
-      </div>
+      <p id="editor-open-status">No audio editor windows are open.</p>
     </section>
 
   </main>
 
   <footer class="app-footer">
-    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.1.10.</p>
+    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.2.0.</p>
 
     <details>
       <summary>Keyboard Shortcuts</summary>
@@ -219,14 +153,11 @@
         <li>Ctrl+Alt+P — Play or Pause the selected recording</li>
         <li>Ctrl+O — Open Audio</li>
         <li>Ctrl+N — New Audio</li>
-        <li>Ctrl+S — Save</li>
-        <li>Ctrl+Shift+S — Save As</li>
-        <li>Ctrl+C — Copy</li>
-        <li>Ctrl+X — Cut</li>
-        <li>Ctrl+V — Paste</li>
-        <li>Ctrl+Z — Undo</li>
-        <li>Ctrl+Y — Redo</li>
       </ul>
+      <p>
+        Each Audio Editor window has its own Save, Save As, Cut, Copy, Paste, Undo, and Redo
+        shortcuts — see that window's own Keyboard Shortcuts disclosure.
+      </p>
       <p>Shortcuts do not work while typing in a text field, and every visible button always works as an alternative.</p>
     </details>
 
@@ -245,10 +176,9 @@
       <summary>Open Audio Diagnostics (Help)</summary>
       <p>
         After using Open Audio, check here to see exactly how many files made it through each
-        stage — how many the native dialog returned, how many reached this app, how many were
-        recognized as supported audio, how many decoded successfully, and how many ended up open
-        as documents. Useful for pinning down exactly where files are lost if a multi-file
-        selection doesn't open everything you selected.
+        stage — how many the native dialog returned, how many were recognized as supported audio,
+        and how many editor windows actually opened. Useful for pinning down exactly where files
+        are lost if a multi-file selection doesn't open every window you expected.
       </p>
       <p id="open-audio-diagnostics">No Open Audio operation has been attempted yet.</p>
     </details>
