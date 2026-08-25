@@ -1415,32 +1415,117 @@ let scope quietly expand:
   0.1.10 — including its still-unresolved `CF_HDROP`-unavailable
   question — but this milestone is not gated on it working.
 
+## 0.2.1 — the paste-target bug, isolated by a genuinely good test result
+
+0.2.0's real Windows test was the first unambiguous win in a long time:
+installer worked, one file opened as one editor window, the window title
+carried the filename, Alt+Tab moved naturally between the Recording
+Studio and both editors — and, critically, **selecting multiple files
+directly inside the native dialog's own list already worked
+correctly**, producing exactly the quoted multi-name text in the File
+Name field that this app's own `parse_multi_select_buffer` (unit-tested
+since 0.1.6) has always known how to read:
+
+> "Slow down.mp3" "Fast JAWS.mp3" "Roxanne Follow Up.mp3" "Roxanne
+> Performance paradox Performance zone vs learning zone.mp3"
+
+That result, on its own, retroactively confirms several things that had
+only ever been argued from documentation before: `GetOpenFileNameW`'s
+own multi-name parsing works: Rust's handling of the multiple paths it
+returns works; editor-window creation, one per path, works. None of
+that needed to change.
+
+What still didn't work — and now, for the first time, is a genuinely
+isolated, single-cause problem rather than one symptom among several
+possible explanations — is the Explorer-copy-then-paste workflow, per
+0.1.8's own diagnostics: `WM_PASTE received by subclass: no.`
+
+### Root cause
+
+Every build since 0.1.8 subclassed the control returned by
+`GetDlgItem(parent, 0x47C)` — the outer `ComboBoxEx32` File Name
+control. But a combo box's editable text is handled by its own inner
+child *edit* control, not the combo box itself; Microsoft's own
+documentation for `WM_PASTE` and for combo box controls generally is
+consistent about this. Subclassing the outer combo control meant the
+subclass was watching a window that `WM_PASTE` never actually reaches —
+it goes straight to the inner edit child, which was never subclassed at
+all in any build through 0.2.0.
+
+### Fixed
+
+`open_dialog_hook_proc` now calls `GetComboBoxInfo` on the outer combo
+control immediately after finding it, and subclasses its `hwndItem`
+field — documented by Microsoft exactly as "a handle to the edit box" —
+instead of the combo box itself. If `GetComboBoxInfo` fails, or reports
+no edit child, the code falls back to subclassing the outer combo as
+every previous build did, rather than installing no subclass at all.
+
+`COMBOBOXINFO` and `GetComboBoxInfo` are documented as living in
+`windows::Win32::UI::Controls` — the exact same module that failed to
+export `SetWindowSubclass` in 0.1.8 despite equally solid documentation.
+Given that specific, first-hand history with this exact module in this
+exact crate/feature combination, both are declared here via raw FFI
+(linked against `user32.dll`, per Microsoft's own documented DLL for
+this function) rather than trusted a second time — the same defensive
+pattern already established for `SetWindowSubclass`/`DefSubclassProc`/
+`RemoveWindowSubclass` and for `NMHDR`/`CDN_INITDONE`. Verified
+structurally: an isolated version of the exact `RawComboBoxInfo` +
+`GetComboBoxInfo` FFI pattern was built with a real `rustc` in this
+sandbox and compiles clean (this only confirms the type-level structure
+is valid Rust, not that the real function call behaves correctly on
+Windows — the same honest limit as every other raw FFI addition in this
+file).
+
+**A real bug was caught and fixed during this exact change, worth
+naming plainly rather than glossing over:** the first attempt at this
+edit produced a duplicated, incorrectly-nested `if let Ok(combo) = ...`
+block from an imprecise text match — caught immediately by re-reading
+the edited region and confirmed fixed via a full brace-balance check
+across the file before moving on, the same verification discipline
+already standard for every change in this file.
+
+### Diagnostics
+
+Extended with every field requested: "Outer File name combo located,"
+"Inner editable child located" (the two new stages this fix inserts
+between "found the combo" and "subclass installed"), and "Quoted
+filenames written to File name edit" plus the literal text written, so
+a future report can show exactly what was typed into the field rather
+than just how many files were involved.
+
+### What this does and does not claim
+
+This is architecturally the most well-targeted fix in the whole Open
+Audio saga — a specific, named control identified by a specific,
+documented API, addressing a symptom (`WM_PASTE received: no`) that
+points directly at it. It is still unverified by anything other than
+documentation and structural compilation, the same honest limit that
+has applied to every Windows-specific change in this file since 0.1.4.
+The 0.2.0 architecture itself — window creation, titles, Alt+Tab,
+cross-window clipboard — was not touched this round and should not need
+re-verifying, only reconfirming.
+
 ## Recommended next phase
 
-Build 0.2.0 via GitHub Actions and run exactly the 16-point acceptance
-test from the correction directive, in order: launch, confirm the
-Recording Studio window opens and stays open, activate Open Audio,
-select two ordinary supported files in one dialog operation, confirm two
-separate editor windows open with their filenames in their titles,
-confirm Alt+Tab moves among the Recording Studio and both editors,
-confirm JAWS/NVDA announces each editor's window title correctly,
-confirm each editor has genuinely independent playhead/selection state
-(playing one must not affect the other), confirm closing one editor
-leaves the other and the Recording Studio open, confirm New Audio opens
-its own separate window, and confirm — by trying to find it, not just by
-not noticing it — that the "Open audio documents" combo box no longer
-exists anywhere. If all sixteen pass, this is the first build in the
-whole Pro line to earn a real `Windows build verified` mark, and a real
-screen reader pass over the same sixteen points is the next thing this
-needs, not another architecture change. If something in the window
-lifecycle itself breaks (a window that doesn't appear, a title that
-doesn't update, Alt+Tab behaving unexpectedly), that's genuinely new
-territory — this environment has never created or managed a real
-multi-window Tauri application, so unlike the file-dialog work, there
-isn't yet a backlog of known, already-investigated failure modes to check
-against first. Also worth testing deliberately, since it's real
-functionality built ahead of schedule: Copy audio in one editor window,
-Alt+Tab to a second, Paste — confirm the shared clipboard actually works
-across two separate windows. Do not test the Explorer-copy-paste
-multi-file workflow as part of this milestone; it's explicitly deferred
-and known to still have an open question from 0.1.10.
+Build 0.2.1 via GitHub Actions and reproduce exactly the workflow the
+real 0.2.0 test isolated: select several audio files in File Explorer,
+Ctrl+C, switch to AccessibleAudioStudio Pro, Ctrl+O, move to the File
+Name field, Ctrl+V, activate Open. Open Audio Diagnostics afterward:
+"Inner editable child located" is the number-one thing to check — if it
+says yes and "WM_PASTE received by subclass" now says yes too (where
+0.1.8 reported no for this exact scenario), the subclass finally reached
+the right control. Compare "Text written" against what direct
+multi-select already proved the dialog can parse correctly — if the same
+quoted-name format gets typed in via paste as gets typed in via direct
+selection, activating Open should produce the same multi-window result
+either way. If "Inner editable child located" says no, `GetComboBoxInfo`
+didn't find an edit child on this real dialog, and the fallback (outer
+combo, same as every prior build) took over instead — worth knowing
+either way, and would mean the fix needs a different approach for
+locating the actual paste target. Also reconfirm the full 0.2.0
+acceptance test still passes (window creation, titles, Alt+Tab,
+independent playhead/selection state, cross-window clipboard) — none of
+that architecture was touched this round, and this build's only job was
+narrowing one already-isolated defect, not re-opening what 0.2.0 already
+got right.

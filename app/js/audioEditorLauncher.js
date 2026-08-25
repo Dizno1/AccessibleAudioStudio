@@ -88,10 +88,11 @@ async function triggerOpenAudio() {
   try {
     const { invoke } = window.__TAURI__.core;
     const result = await withTimeout(invoke("open_audio_windows"), OPEN_AUDIO_INVOKE_TIMEOUT_MS);
-    // result: { dialog_launched, win32_multi_select, wm_paste_received, open_clipboard_succeeded,
-    //           open_clipboard_error, cf_hdrop_available, available_clipboard_formats,
-    //           get_clipboard_data_succeeded, drag_query_file_count, paste_hdrop_detected,
-    //           paste_hdrop_file_count, paste_hdrop_file_names, paths_supplied_to_dialog,
+    // result: { dialog_launched, win32_multi_select, outer_combo_located, inner_edit_located,
+    //           wm_paste_received, open_clipboard_succeeded, open_clipboard_error,
+    //           cf_hdrop_available, available_clipboard_formats, get_clipboard_data_succeeded,
+    //           drag_query_file_count, paste_hdrop_detected, paste_hdrop_file_count,
+    //           paste_hdrop_file_names, quoted_text_written, paths_supplied_to_dialog,
     //           native_dialog_count, windows_opened, skipped_unsupported, window_open_errors }
 
     updateOpenAudioDiagnostics({ ...result, dialogResult: result.native_dialog_count === 0 ? "canceled" : "opened" });
@@ -189,6 +190,11 @@ function updateOpenAudioDiagnostics(stats) {
   const wmPasteLine =
     stats.wm_paste_received !== undefined ? `WM_PASTE received by subclass: ${stats.wm_paste_received ? "yes" : "no"}.` : null;
 
+  const outerComboLine =
+    stats.outer_combo_located !== undefined ? `Outer File name combo located: ${stats.outer_combo_located ? "yes" : "no"}.` : null;
+  const innerEditLine =
+    stats.inner_edit_located !== undefined ? `Inner editable child located: ${stats.inner_edit_located ? "yes" : "no"}.` : null;
+
   const clipboardLines = [];
   if (stats.wm_paste_received) {
     clipboardLines.push(
@@ -209,6 +215,12 @@ function updateOpenAudioDiagnostics(stats) {
         clipboardLines.push(`GetClipboardData(CF_HDROP): ${stats.get_clipboard_data_succeeded ? "succeeded" : "failed"}.`);
         if (stats.get_clipboard_data_succeeded) {
           clipboardLines.push(`DragQueryFileW file count: ${stats.drag_query_file_count}.`);
+          clipboardLines.push(
+            `Quoted filenames written to File name edit: ${stats.paste_hdrop_detected ? stats.paste_hdrop_file_count : 0}.`
+          );
+          if (stats.quoted_text_written) {
+            clipboardLines.push(`Text written: ${stats.quoted_text_written}`);
+          }
         }
       }
     }
@@ -233,6 +245,8 @@ function updateOpenAudioDiagnostics(stats) {
     dialogResultLine,
     multiSelectLine,
     wmPasteLine,
+    outerComboLine,
+    innerEditLine,
     ...clipboardLines,
     nativeReturnedLine,
     windowsOpenedLine,

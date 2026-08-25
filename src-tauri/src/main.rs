@@ -250,6 +250,8 @@ thread_local! {
 #[cfg(windows)]
 #[derive(Default, Clone)]
 struct PasteDiagnostics {
+    outer_combo_located: bool,
+    inner_edit_located: bool,
     wm_paste_received: bool,
     open_clipboard_succeeded: bool,
     open_clipboard_error: u32,
@@ -260,6 +262,7 @@ struct PasteDiagnostics {
     hdrop_detected: bool,
     hdrop_file_count: usize,
     hdrop_file_names: Vec<String>,
+    quoted_text_written: String,
 }
 
 /// The File Name ComboBoxEx32 control's ID in an Explorer-style
@@ -350,6 +353,58 @@ extern "system" {
     ) -> windows::Win32::Foundation::LRESULT;
 }
 
+/// The real, fixed C memory layout of `RECT` (windef.h):
+/// `typedef struct tagRECT { LONG left; LONG top; LONG right; LONG bottom; } RECT;`
+/// — only needed here as a correctly-sized/aligned field inside
+/// `RawComboBoxInfo` below; nothing in this file ever reads its values.
+#[cfg(windows)]
+#[repr(C)]
+struct RawRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// The real, fixed C memory layout of `COMBOBOXINFO` (winuser.h):
+/// `typedef struct tagCOMBOBOXINFO { DWORD cbSize; RECT rcItem; RECT rcButton;
+/// DWORD stateButton; HWND hwndCombo; HWND hwndItem; HWND hwndList; } COMBOBOXINFO;`
+/// — `hwnd_item` (`hwndItem` in the real struct) is the one field this file
+/// actually needs: "A handle to the edit box," per Microsoft's own
+/// documentation of this struct. Defined locally, and paired with a raw
+/// `GetComboBoxInfo` FFI declaration below, for the same reason as
+/// `RawNmhdr`/`CDN_INITDONE` earlier in this file: `COMBOBOXINFO` and
+/// `GetComboBoxInfo` are documented as living in
+/// `windows::Win32::UI::Controls` — the exact module that failed to
+/// export `SetWindowSubclass` in this same crate/feature combination
+/// despite equally solid documentation. Rather than trust that module a
+/// second time, this sidesteps the question entirely.
+#[cfg(windows)]
+#[repr(C)]
+struct RawComboBoxInfo {
+    cb_size: u32,
+    rc_item: RawRect,
+    rc_button: RawRect,
+    state_button: u32,
+    hwnd_combo: windows::Win32::Foundation::HWND,
+    hwnd_item: windows::Win32::Foundation::HWND,
+    hwnd_list: windows::Win32::Foundation::HWND,
+}
+
+/// Raw FFI declaration for `GetComboBoxInfo`, linked against
+/// `user32.dll` (per Microsoft's own documented DLL for this function —
+/// a core, always-present system library, more fundamental even than
+/// `comctl32.dll`). C signature, unchanged since Windows Vista:
+/// `BOOL GetComboBoxInfo(HWND hwndCombo, PCOMBOBOXINFO pcbi)`.
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn GetComboBoxInfo(
+        hwnd_combo: windows::Win32::Foundation::HWND,
+        pcbi: *mut RawComboBoxInfo,
+    ) -> i32; // BOOL
+}
+
 /// Window subclass procedure installed on the File Name control. Handles
 /// exactly one message, WM_PASTE; every other message goes straight to
 /// `DefSubclassProc`, unmodified default behavior.
@@ -391,6 +446,8 @@ unsafe extern "system" fn paste_subclass_proc(
 
         if cd.paths.len() >= 2 {
             let text = build_quoted_multi_name(&cd.paths);
+            PASTE_DIAGNOSTICS.with(|d| d.borrow_mut().quoted_text_written = text.clone());
+
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
             let _ = SetWindowTextW(hwnd, windows::core::PCWSTR(wide.as_ptr()));
@@ -486,14 +543,48 @@ unsafe extern "system" fn open_dialog_hook_proc(
         // was exactly that mix-up, caught by the real Windows compiler.
         if let Ok(combo) = GetDlgItem(parent, FILENAME_COMBO_ID) {
             if combo != windows::Win32::Foundation::HWND::default() {
-                // paste_subclass_proc is passed directly, not
-                // Some()-wrapped — the raw FFI declaration above (unlike
-                // windows-rs's own Option-wrapped LPOFNHOOKPROC pattern
-                // used for lpfnHook below) declares this parameter as a
-                // plain, always-required function pointer, matching how
-                // SetWindowSubclass's C signature actually works: a null
-                // callback is never a valid, meaningful call here.
-                let _ = SetWindowSubclass(combo, paste_subclass_proc, SUBCLASS_ID, 0);
+                PASTE_DIAGNOSTICS.with(|d| d.borrow_mut().outer_combo_located = true);
+
+                // The outer control found above (ComboBoxEx32) is a combo
+                // box, and per Microsoft's own combo-box subclassing
+                // guidance, WM_PASTE is actually handled by its inner
+                // editable child, not the combo box itself — subclassing
+                // the outer control (every previous build's approach)
+                // means Ctrl+V never reaches the subclass at all. The
+                // inner edit control's handle is obtained here via
+                // GetComboBoxInfo, whose hwndItem field is documented
+                // exactly as "a handle to the edit box."
+                let mut info = RawComboBoxInfo {
+                    cb_size: std::mem::size_of::<RawComboBoxInfo>() as u32,
+                    rc_item: RawRect { left: 0, top: 0, right: 0, bottom: 0 },
+                    rc_button: RawRect { left: 0, top: 0, right: 0, bottom: 0 },
+                    state_button: 0,
+                    hwnd_combo: windows::Win32::Foundation::HWND::default(),
+                    hwnd_item: windows::Win32::Foundation::HWND::default(),
+                    hwnd_list: windows::Win32::Foundation::HWND::default(),
+                };
+
+                // windows 0.58 resolves GetDlgItem's HWND parameter through
+                // the windows_core Param<HWND> trait, which takes the HWND
+                // value directly rather than an Option-wrapped one — see
+                // the second compile-fix round in docs/Pro Roadmap.md for
+                // the real compiler error this was caught from. Not a
+                // concern here: GetComboBoxInfo/SetWindowSubclass are both
+                // hand-declared raw FFI, taking plain HWND by design.
+                let target = if GetComboBoxInfo(combo, &mut info) != 0
+                    && info.hwnd_item != windows::Win32::Foundation::HWND::default()
+                {
+                    PASTE_DIAGNOSTICS.with(|d| d.borrow_mut().inner_edit_located = true);
+                    info.hwnd_item
+                } else {
+                    // Defensive fallback: subclass the outer combo itself,
+                    // exactly as every previous build did, rather than
+                    // installing no subclass at all if GetComboBoxInfo
+                    // fails or reports no edit child.
+                    combo
+                };
+
+                let _ = SetWindowSubclass(target, paste_subclass_proc, SUBCLASS_ID, 0);
                 break;
             }
         }
@@ -623,6 +714,8 @@ fn pick_files_native(
 #[cfg(not(windows))]
 #[derive(Default, Clone)]
 struct PasteDiagnostics {
+    outer_combo_located: bool,
+    inner_edit_located: bool,
     wm_paste_received: bool,
     open_clipboard_succeeded: bool,
     open_clipboard_error: u32,
@@ -633,6 +726,7 @@ struct PasteDiagnostics {
     hdrop_detected: bool,
     hdrop_file_count: usize,
     hdrop_file_names: Vec<String>,
+    quoted_text_written: String,
 }
 
 /// ---------------------------------------------------------------------
@@ -703,6 +797,8 @@ struct EditorInitInfo {
 struct OpenAudioWindowsResult {
     dialog_launched: bool,
     win32_multi_select: bool,
+    outer_combo_located: bool,
+    inner_edit_located: bool,
     wm_paste_received: bool,
     open_clipboard_succeeded: bool,
     open_clipboard_error: u32,
@@ -713,6 +809,7 @@ struct OpenAudioWindowsResult {
     paste_hdrop_detected: bool,
     paste_hdrop_file_count: usize,
     paste_hdrop_file_names: Vec<String>,
+    quoted_text_written: String,
     paths_supplied_to_dialog: usize,
     native_dialog_count: usize,
     windows_opened: usize,
@@ -793,6 +890,8 @@ async fn open_audio_windows(
     Ok(OpenAudioWindowsResult {
         dialog_launched: true,
         win32_multi_select: cfg!(windows),
+        outer_combo_located: paste_diagnostics.outer_combo_located,
+        inner_edit_located: paste_diagnostics.inner_edit_located,
         wm_paste_received: paste_diagnostics.wm_paste_received,
         open_clipboard_succeeded: paste_diagnostics.open_clipboard_succeeded,
         open_clipboard_error: paste_diagnostics.open_clipboard_error,
@@ -803,6 +902,7 @@ async fn open_audio_windows(
         paste_hdrop_detected: paste_diagnostics.hdrop_detected,
         paste_hdrop_file_count: paste_diagnostics.hdrop_file_count,
         paste_hdrop_file_names: paste_diagnostics.hdrop_file_names,
+        quoted_text_written: paste_diagnostics.quoted_text_written,
         paths_supplied_to_dialog: paste_diagnostics.hdrop_file_count,
         native_dialog_count,
         windows_opened,

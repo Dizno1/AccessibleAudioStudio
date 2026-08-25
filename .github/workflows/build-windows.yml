@@ -10,10 +10,10 @@ name: Build Windows Installer
 # (productName "AccessibleAudioStudio Pro"; check that file for the current
 # version) — separate from the free AccessibleAudioStudio's own identity
 # and any tag history it may have in this same repository. Use a
-# Pro-specific tag matching the current version, e.g. "pro-v0.2.0", so Pro
+# Pro-specific tag matching the current version, e.g. "pro-v0.2.1", so Pro
 # version tags never collide with a free-edition tag such as "v1.0.0".
 #
-# Push a tag like "pro-v0.2.0" to build the installers AND publish them as a
+# Push a tag like "pro-v0.2.1" to build the installers AND publish them as a
 # draft GitHub Release automatically (see README.md, "GitHub Releases"). Or
 # run this workflow manually (Actions tab > Build Windows Installer > Run
 # workflow) to just build and download the installers as workflow
