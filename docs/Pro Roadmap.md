@@ -1375,7 +1375,7 @@ below rather than collapsed into one "done":
 | 14. Closing one editor leaves the other and the Recording Studio open | Yes (ordinary OS window behavior — no app code needed to implement this specifically) | No | No |
 | 15. New Audio creates its own separate editor window | Yes | No | No |
 | 16. The document combo box no longer exists | Yes — confirmed by direct inspection, not just by not adding it back: no `document-select`/`editor-document-area`/`close-document-button` ID exists anywhere in `index.html` or `editor.html` | No | No |
-| Cross-window Copy/Paste (built ahead of the 0.2.1 schedule, not required for this milestone) | Yes, real implementation, not scaffolding | No | No |
+| Cross-window Copy/Paste (built ahead of the 0.2.2 schedule, not required for this milestone) | Yes, real implementation, not scaffolding | No | No |
 
 Every "No" above is the same honest limitation already established for
 every Windows-specific change since 0.1.4, now stated in the terms this
@@ -1415,7 +1415,7 @@ let scope quietly expand:
   0.1.10 — including its still-unresolved `CF_HDROP`-unavailable
   question — but this milestone is not gated on it working.
 
-## 0.2.1 — the paste-target bug, isolated by a genuinely good test result
+## 0.2.2 — the paste-target bug, isolated by a genuinely good test result
 
 0.2.0's real Windows test was the first unambiguous win in a long time:
 installer worked, one file opened as one editor window, the window title
@@ -1508,7 +1508,7 @@ re-verifying, only reconfirming.
 
 ## Recommended next phase
 
-Build 0.2.1 via GitHub Actions and reproduce exactly the workflow the
+Build 0.2.2 via GitHub Actions and reproduce exactly the workflow the
 real 0.2.0 test isolated: select several audio files in File Explorer,
 Ctrl+C, switch to AccessibleAudioStudio Pro, Ctrl+O, move to the File
 Name field, Ctrl+V, activate Open. Open Audio Diagnostics afterward:

@@ -403,6 +403,75 @@ extern "system" {
         hwnd_combo: windows::Win32::Foundation::HWND,
         pcbi: *mut RawComboBoxInfo,
     ) -> i32; // BOOL
+
+    fn FindWindowExW(
+        hwnd_parent: windows::Win32::Foundation::HWND,
+        hwnd_child_after: windows::Win32::Foundation::HWND,
+        class_name: windows::core::PCWSTR,
+        window_name: windows::core::PCWSTR,
+    ) -> windows::Win32::Foundation::HWND;
+}
+
+/// Resolve the actual editable HWND inside the File Name ComboBoxEx32.
+/// The common dialog nests this as ComboBoxEx32 -> ComboBox -> Edit.
+/// 0.2.1 called GetComboBoxInfo on the outer ComboBoxEx32 itself; that API
+/// is for a ComboBox and can therefore fail before ever reaching hwndItem.
+/// This resolver first walks the documented/common-control child hierarchy
+/// directly, then uses GetComboBoxInfo on the inner ComboBox as a fallback.
+#[cfg(windows)]
+unsafe fn find_filename_edit(
+    combo_ex: windows::Win32::Foundation::HWND,
+) -> windows::Win32::Foundation::HWND {
+    use windows::Win32::Foundation::HWND;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let combo_class = wide("ComboBox");
+    let edit_class = wide("Edit");
+    let null_name = windows::core::PCWSTR::null();
+
+    let inner_combo = FindWindowExW(
+        combo_ex,
+        HWND::default(),
+        windows::core::PCWSTR(combo_class.as_ptr()),
+        null_name,
+    );
+
+    if inner_combo != HWND::default() {
+        let edit = FindWindowExW(
+            inner_combo,
+            HWND::default(),
+            windows::core::PCWSTR(edit_class.as_ptr()),
+            null_name,
+        );
+        if edit != HWND::default() {
+            return edit;
+        }
+
+        let mut info = RawComboBoxInfo {
+            cb_size: std::mem::size_of::<RawComboBoxInfo>() as u32,
+            rc_item: RawRect { left: 0, top: 0, right: 0, bottom: 0 },
+            rc_button: RawRect { left: 0, top: 0, right: 0, bottom: 0 },
+            state_button: 0,
+            hwnd_combo: HWND::default(),
+            hwnd_item: HWND::default(),
+            hwnd_list: HWND::default(),
+        };
+        if GetComboBoxInfo(inner_combo, &mut info) != 0 && info.hwnd_item != HWND::default() {
+            return info.hwnd_item;
+        }
+    }
+
+    // Defensive extra case for dialog variants where Edit is directly
+    // parented by the ComboBoxEx32.
+    FindWindowExW(
+        combo_ex,
+        HWND::default(),
+        windows::core::PCWSTR(edit_class.as_ptr()),
+        null_name,
+    )
 }
 
 /// Window subclass procedure installed on the File Name control. Handles
@@ -545,42 +614,18 @@ unsafe extern "system" fn open_dialog_hook_proc(
             if combo != windows::Win32::Foundation::HWND::default() {
                 PASTE_DIAGNOSTICS.with(|d| d.borrow_mut().outer_combo_located = true);
 
-                // The outer control found above (ComboBoxEx32) is a combo
-                // box, and per Microsoft's own combo-box subclassing
-                // guidance, WM_PASTE is actually handled by its inner
-                // editable child, not the combo box itself — subclassing
-                // the outer control (every previous build's approach)
-                // means Ctrl+V never reaches the subclass at all. The
-                // inner edit control's handle is obtained here via
-                // GetComboBoxInfo, whose hwndItem field is documented
-                // exactly as "a handle to the edit box."
-                let mut info = RawComboBoxInfo {
-                    cb_size: std::mem::size_of::<RawComboBoxInfo>() as u32,
-                    rc_item: RawRect { left: 0, top: 0, right: 0, bottom: 0 },
-                    rc_button: RawRect { left: 0, top: 0, right: 0, bottom: 0 },
-                    state_button: 0,
-                    hwnd_combo: windows::Win32::Foundation::HWND::default(),
-                    hwnd_item: windows::Win32::Foundation::HWND::default(),
-                    hwnd_list: windows::Win32::Foundation::HWND::default(),
-                };
-
-                // windows 0.58 resolves GetDlgItem's HWND parameter through
-                // the windows_core Param<HWND> trait, which takes the HWND
-                // value directly rather than an Option-wrapped one — see
-                // the second compile-fix round in docs/Pro Roadmap.md for
-                // the real compiler error this was caught from. Not a
-                // concern here: GetComboBoxInfo/SetWindowSubclass are both
-                // hand-declared raw FFI, taking plain HWND by design.
-                let target = if GetComboBoxInfo(combo, &mut info) != 0
-                    && info.hwnd_item != windows::Win32::Foundation::HWND::default()
-                {
+                // GetDlgItem(cmb13) gives the outer ComboBoxEx32. The actual
+                // keyboard-edit target is normally nested one level deeper:
+                // ComboBoxEx32 -> ComboBox -> Edit. 0.2.1 mistakenly passed
+                // the outer ComboBoxEx32 to GetComboBoxInfo, so the edit HWND
+                // could remain undiscovered and WM_PASTE would still bypass us.
+                let edit = find_filename_edit(combo);
+                let target = if edit != windows::Win32::Foundation::HWND::default() {
                     PASTE_DIAGNOSTICS.with(|d| d.borrow_mut().inner_edit_located = true);
-                    info.hwnd_item
+                    edit
                 } else {
-                    // Defensive fallback: subclass the outer combo itself,
-                    // exactly as every previous build did, rather than
-                    // installing no subclass at all if GetComboBoxInfo
-                    // fails or reports no edit child.
+                    // Preserve normal dialog behavior even if Windows presents
+                    // an unexpected control hierarchy.
                     combo
                 };
 
