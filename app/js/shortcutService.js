@@ -103,20 +103,122 @@ export const SHORTCUTS = [
     label: "Ctrl+Y",
     description: "Redo",
   },
+
+  // Stage 1 (Pro Roadmap): playhead navigation and audible scrubbing.
+  // Deliberately bare, unmodified keys, matching the specified design —
+  // see the "known risk" note in docs/Pro Roadmap.md's Stage 1 entry:
+  // every one of these is exactly the category of keystroke a screen
+  // reader's virtual cursor is most likely to intercept for its own
+  // navigation before this app's own keydown handler ever sees it. This
+  // has not been verified with real JAWS in this environment.
+  {
+    action: "navBack10",
+    combo: { key: "arrowleft" },
+    label: "Left Arrow",
+    description: "Move playhead back 10 seconds",
+  },
+  {
+    action: "navForward10",
+    combo: { key: "arrowright" },
+    label: "Right Arrow",
+    description: "Move playhead forward 10 seconds",
+  },
+  {
+    action: "navBack30",
+    combo: { ctrl: true, key: "arrowleft" },
+    label: "Ctrl+Left Arrow",
+    description: "Move playhead back 30 seconds",
+  },
+  {
+    action: "navForward30",
+    combo: { ctrl: true, key: "arrowright" },
+    label: "Ctrl+Right Arrow",
+    description: "Move playhead forward 30 seconds",
+  },
+  {
+    action: "jumpBeginning",
+    combo: { key: "home" },
+    label: "Home",
+    description: "Move playhead to the beginning",
+  },
+  {
+    action: "jumpEnd",
+    combo: { key: "end" },
+    label: "End",
+    description: "Move playhead to the end",
+  },
+  {
+    action: "scrubBack1",
+    combo: { key: "u" },
+    label: "U",
+    description: "Audibly scrub backward 1 second",
+  },
+  {
+    action: "scrubForward1",
+    combo: { key: "i" },
+    label: "I",
+    description: "Audibly scrub forward 1 second",
+  },
+  {
+    action: "scrubBack100ms",
+    combo: { shift: true, key: "u" },
+    label: "Shift+U",
+    description: "Audibly scrub backward 100 milliseconds",
+  },
+  {
+    action: "scrubForward100ms",
+    combo: { shift: true, key: "i" },
+    label: "Shift+I",
+    description: "Audibly scrub forward 100 milliseconds",
+  },
+  {
+    action: "scrubBack10ms",
+    combo: { ctrl: true, shift: true, key: "u" },
+    label: "Ctrl+Shift+U",
+    description: "Audibly scrub backward 10 milliseconds",
+  },
+  {
+    action: "scrubForward10ms",
+    combo: { ctrl: true, shift: true, key: "i" },
+    label: "Ctrl+Shift+I",
+    description: "Audibly scrub forward 10 milliseconds",
+  },
+  {
+    action: "auditionPlayback",
+    combo: { key: " " },
+    label: "Space",
+    description: "Audition from the current position, without changing it",
+  },
+  {
+    action: "locateAndLand",
+    combo: { key: "x" },
+    label: "X",
+    description: "Play, then land the playhead where playback stops",
+  },
+  {
+    action: "setMarkStart",
+    combo: { key: "[" },
+    label: "[",
+    description: "Set the start Mark at the current position",
+  },
+  {
+    action: "setMarkEnd",
+    combo: { key: "]" },
+    label: "]",
+    description: "Set the end Mark at the current position",
+  },
 ];
 
 // Reserved for future phases. Intentionally NOT wired to any key combo yet;
 // listed here so the architecture already accounts for them and adding
-// each one later is a config addition, not a redesign.
+// each one later is a config addition, not a redesign. "skipForward",
+// "skipBackward", "jumpToBeginning", "jumpToEnd" are now implemented above
+// (navBack10/navForward10/jumpBeginning/jumpEnd) and removed from this list.
 export const RESERVED_FUTURE_ACTIONS = [
   "previousMarker",
   "nextMarker",
   "insertMarker",
   "restartPlayback",
-  "skipForward",
-  "skipBackward",
-  "jumpToBeginning",
-  "jumpToEnd",
   "trimStart",
   "trimEnd",
   "normalizeAudio",

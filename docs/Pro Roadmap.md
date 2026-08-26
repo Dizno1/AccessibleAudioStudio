@@ -1506,26 +1506,140 @@ The 0.2.0 architecture itself — window creation, titles, Alt+Tab,
 cross-window clipboard — was not touched this round and should not need
 re-verifying, only reconfirming.
 
+## 0.2.3 — Stage 1: the playhead/navigation foundation
+
+The first implementation stage built directly on the roadmap document
+(the `.docx`, which contains the detailed Stage 1/Stage 2 specification
+— the markdown files in `docs/` don't carry this level of detail).
+Per the correction directive for this stage, the roadmap was read in
+full before any code changed, and the file-opening path (`main.rs`,
+`pick_files_native`, the dialog hook, everything the 0.1.x → 0.2.2 line
+fought hard for) was not touched at all — confirmed by diff against the
+0.2.2 baseline before returning this build.
+
+### What was already true, and what this stage actually added
+
+Two pieces of Stage 1 were already fully built before this stage began:
+human-readable time (`timeFormat.js`'s `formatTimePrecise`/
+`formatDurationNatural` already produce exactly the required hours/
+minutes/seconds.milliseconds format) and the playhead itself
+(`AudioDocument.cursorSec`, with `moveCursor()` already clamping at both
+ends). Neither needed new code — this stage is additive navigation and
+playback behavior on top of an already-correct foundation.
+
+**Coarse navigation:** Left/Right Arrow (10s), Ctrl+Left/Right Arrow
+(30s), Home/End — new `shortcutService.js` entries calling the existing
+`moveCursor`/jump logic directly. A new "Back/Forward 30 Seconds" button
+pair was added alongside the existing 10-second buttons in
+`editor.html`.
+
+**Audible scrubbing (U/I, Shift+U/I, Ctrl+Shift+U/I):**
+`BufferPlayer.scrubClip()` is new — it plays a short (~200ms), real,
+self-stopping clip of actual document audio starting at the newly-moved
+position, rather than a silent playhead jump. This is a deliberate,
+stated scope decision: it is *not* continuous, real-time, pitch-
+preserved scrub audio the way a mouse-drag scrub works in a professional
+NLE (that would need a materially different, granular playback engine)
+— it's genuine audible feedback at each discrete keyboard step, which is
+what the specified 1-second/100ms/10ms *step* increments actually call
+for, achievable with the existing buffer-source-based player with zero
+engine changes.
+
+**SPACE (audition) vs. X (locate-and-land) — the decision the roadmap
+itself flagged as open.** The roadmap's own "Edit Position and Playback
+Position" section states: "we will explicitly decide whether the editor
+maintains one current position or distinguishes an edit position from
+the moving playback position... This decision will be prototyped before
+the full editing command set is locked." This stage's SPACE/X split *is*
+that prototype, not a separate feature bolted alongside it:
+
+- **SPACE (audition):** plays from the current playhead; stopping —
+  by pressing Space again, or by playback reaching the end on its own
+  — never moves the playhead. Repeated Space lets a user audition
+  from the same established editing context as many times as needed.
+- **X (locate and land):** plays from the current playhead; stopping —
+  again, either by pressing X again or by reaching the end naturally —
+  moves the playhead to exactly where it stopped. This is what lets a
+  user listen naturally until roughly the right spot, land there with
+  X, then use U/I scrubbing to find the exact acoustic boundary.
+
+Notably, **the pre-existing single Play/Pause button already behaved
+like X, not a neutral toggle** — its old stop handler already did
+`activeDoc.cursorSec = player.getPositionSec()`. So this stage is not
+"X is new behavior grafted onto old Play/Pause" — the existing button
+*was* X all along; what's genuinely new is SPACE, which had no prior
+equivalent (nothing before this stage could play back without
+eventually moving the playhead). The existing button was relabeled
+"Play and Land (X)" and a new "Audition (Space)" button was added
+beside it, both reachable without a keyboard as required.
+
+Both commands are implemented as one small state machine
+(`playbackMode: "audition" | "locate" | null` in `editorWindow.js`),
+since they share one underlying `BufferPlayer` session. The transition
+logic (stop-without-landing, stop-with-landing, and interrupting one
+mode with the other) was extracted and tested in isolation with a fake
+player object — five assertions, all passing — and confirmed
+character-for-character identical to what shipped, the same
+verification discipline already standard for this project's Rust-side
+changes, now applied here.
+
+**Marks foundation (`[`/`]`):** deliberately thin. Per the correction
+directive ("do not perform a large selection-system rewrite unless
+genuinely required"), `[` and `]` are aliases directly onto the
+already-existing `setSelectionStart`/`setSelectionEnd` — no new data
+model, no new UI beyond labeling the existing "Set Selection Start/End"
+buttons with their new shortcuts. This gives the playhead architecture
+a real, working two-boundary foundation without pre-building the full
+Stage 7 Markers feature (named marks, next/previous marker navigation,
+etc.), which remains out of scope for this stage as directed.
+
+### What was deliberately not touched
+
+`main.rs`, `pick_files_native`, the entire recording engine
+(`recordingEngine.js`, `library.js`, `playback.js`, `deviceManager.js`,
+`storage.js`), `main.js`, `audioEditorLauncher.js`, `audioDocument.js`,
+`audioBufferUtils.js`, `audioClipboard.js`, `audioCodec.js`, and
+`index.html` — confirmed byte-identical to the 0.2.2 baseline by direct
+diff before this build was returned. Two long-orphaned files from the
+pre-0.2.0 single-webview architecture, `documentManager.js` and
+`audioEditorController.js`, were deleted — confirmed first that nothing
+in the codebase still imported either.
+
+### The one risk this stage cannot resolve itself
+
+Every new Stage 1 shortcut is a bare, unmodified key: arrows, Home, End,
+U, I, X, Space, `[`, `]`. This is exactly the category of keystroke a
+screen reader's virtual cursor is most likely to intercept for its own
+navigation before this app's own keydown handler ever sees it — X in
+particular is commonly bound to "next checkbox" in JAWS's own
+quick-navigation scheme. The roadmap explicitly names this risk
+("Avoid shortcut collisions with JAWS, Windows, and common
+browser/webview navigation") and names testing it with the virtual
+cursor on as Stage 1's actual exit criterion. This environment cannot
+run JAWS, so this is stated as a real, unresolved risk, not glossed
+over — see the Final Report for this build for the complete verification
+breakdown.
+
 ## Recommended next phase
 
-Build 0.2.2 via GitHub Actions and reproduce exactly the workflow the
-real 0.2.0 test isolated: select several audio files in File Explorer,
-Ctrl+C, switch to AccessibleAudioStudio Pro, Ctrl+O, move to the File
-Name field, Ctrl+V, activate Open. Open Audio Diagnostics afterward:
-"Inner editable child located" is the number-one thing to check — if it
-says yes and "WM_PASTE received by subclass" now says yes too (where
-0.1.8 reported no for this exact scenario), the subclass finally reached
-the right control. Compare "Text written" against what direct
-multi-select already proved the dialog can parse correctly — if the same
-quoted-name format gets typed in via paste as gets typed in via direct
-selection, activating Open should produce the same multi-window result
-either way. If "Inner editable child located" says no, `GetComboBoxInfo`
-didn't find an edit child on this real dialog, and the fallback (outer
-combo, same as every prior build) took over instead — worth knowing
-either way, and would mean the fix needs a different approach for
-locating the actual paste target. Also reconfirm the full 0.2.0
-acceptance test still passes (window creation, titles, Alt+Tab,
-independent playhead/selection state, cross-window clipboard) — none of
-that architecture was touched this round, and this build's only job was
-narrowing one already-isolated defect, not re-opening what 0.2.0 already
-got right.
+Build 0.2.3 via GitHub Actions and, with real JAWS running and the
+virtual cursor on (per the roadmap's own Stage 1 exit criterion), test
+every new shortcut in an editor window: Left/Right, Ctrl+Left/Right,
+Home, End, U, I, Shift+U/I, Ctrl+Shift+U/I, Space, X, `[`, `]`. The
+single most important thing to determine is whether these bare,
+unmodified keys actually reach this app's own keydown handler at all
+while the virtual cursor is active, or whether JAWS intercepts some or
+all of them for its own quick-navigation first — X colliding with
+JAWS's own checkbox-navigation letter is the specific, named risk. If
+any of them don't reach the app, that's the concrete next problem to
+solve (a different keybinding, or a documented "use forms mode/virtual
+cursor off for these" instruction), not a reason to abandon the
+underlying SPACE/X or scrubbing design. Separately, confirm scrubbing
+genuinely produces audible sound at each step (this could not be run in
+this environment — jsdom has no real Web Audio implementation) and that
+SPACE truly never moves the playhead across several audition cycles
+while X reliably lands it. Also reconfirm the full 0.2.2 acceptance
+surface — window creation, titles, Alt+Tab, cross-window clipboard, the
+Explorer-copy-paste workflow — since none of that was touched this
+round and shouldn't need re-verifying, only reconfirming nothing
+regressed.

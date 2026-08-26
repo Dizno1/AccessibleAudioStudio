@@ -43,8 +43,21 @@ async function main() {
   initShortcutService();
   registerShortcutActions();
   initShortcutDiagnosticsPanel();
+  // Playback ending on its own (reaching the end of the document,
+  // selection, or preview range) is handled the same as an explicit
+  // stop for landing purposes: if X (locate-and-land) was playing, the
+  // playhead lands at the natural end position; if Space (audition) or
+  // Preview Selection was playing, it does not move. `player.rangeEndSec`
+  // is read directly here rather than via getPositionSec(), since by the
+  // time this callback runs the player has already marked itself as not
+  // playing, and getPositionSec() reports the range *start* in that case.
   player.onEnded = () => {
-    el.editorPlayPauseButton.textContent = "Play";
+    if (playbackMode === "locate" && activeDoc) {
+      activeDoc.cursorSec = player.rangeEndSec;
+      updatePositionDisplay();
+    }
+    playbackMode = null;
+    updateTransportButtonLabels();
     el.editorPreviewButton.textContent = "Preview Selection";
   };
 
@@ -164,6 +177,7 @@ function cacheElements() {
     selectionInfo: document.getElementById("selection-info"),
 
     navButtons: Array.from(document.querySelectorAll("[data-nav]")),
+    scrubButtons: Array.from(document.querySelectorAll("[data-scrub]")),
     jumpBeginningButton: document.getElementById("jump-doc-beginning-button"),
     jumpEndButton: document.getElementById("jump-doc-end-button"),
     announcePositionButton: document.getElementById("announce-doc-position-button"),
@@ -174,6 +188,7 @@ function cacheElements() {
     clearSelectionButton: document.getElementById("clear-selection-button"),
     announceSelectionButton: document.getElementById("announce-selection-button"),
 
+    auditionButton: document.getElementById("audition-button"),
     editorPlayPauseButton: document.getElementById("editor-play-pause-button"),
     editorPreviewButton: document.getElementById("editor-preview-selection-button"),
 
@@ -202,6 +217,9 @@ function bindEvents() {
   el.navButtons.forEach((button) => {
     button.addEventListener("click", () => handleNavigate(parseFloat(button.dataset.nav)));
   });
+  el.scrubButtons.forEach((button) => {
+    button.addEventListener("click", () => handleScrub(parseFloat(button.dataset.scrub)));
+  });
   el.jumpBeginningButton.addEventListener("click", () => handleJump(0));
   el.jumpEndButton.addEventListener("click", () => {
     if (activeDoc) handleJump(activeDoc.durationSec);
@@ -214,7 +232,8 @@ function bindEvents() {
   el.clearSelectionButton.addEventListener("click", handleClearSelection);
   el.announceSelectionButton.addEventListener("click", handleAnnounceSelection);
 
-  el.editorPlayPauseButton.addEventListener("click", handleEditorPlayPause);
+  el.auditionButton.addEventListener("click", handleAuditionPlayback);
+  el.editorPlayPauseButton.addEventListener("click", handleLocateAndLand);
   el.editorPreviewButton.addEventListener("click", handlePreviewSelection);
 
   el.cutButton.addEventListener("click", handleCut);
@@ -267,6 +286,88 @@ function registerShortcutActions() {
     openSaveAsForm();
     return { executed: true, resultText: "Save As" };
   });
+
+  // Stage 1: playhead navigation and audible scrubbing (see docs/Pro Roadmap.md).
+  registerAction("navBack10", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleNavigate(-10);
+    return { executed: true, resultText: "Moved playhead back 10 seconds" };
+  });
+  registerAction("navForward10", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleNavigate(10);
+    return { executed: true, resultText: "Moved playhead forward 10 seconds" };
+  });
+  registerAction("navBack30", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleNavigate(-30);
+    return { executed: true, resultText: "Moved playhead back 30 seconds" };
+  });
+  registerAction("navForward30", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleNavigate(30);
+    return { executed: true, resultText: "Moved playhead forward 30 seconds" };
+  });
+  registerAction("jumpBeginning", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleJump(0);
+    return { executed: true, resultText: "Jumped to beginning" };
+  });
+  registerAction("jumpEnd", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleJump(activeDoc.durationSec);
+    return { executed: true, resultText: "Jumped to end" };
+  });
+  registerAction("scrubBack1", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleScrub(-1);
+    return { executed: true, resultText: "Scrubbed back 1 second" };
+  });
+  registerAction("scrubForward1", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleScrub(1);
+    return { executed: true, resultText: "Scrubbed forward 1 second" };
+  });
+  registerAction("scrubBack100ms", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleScrub(-0.1);
+    return { executed: true, resultText: "Scrubbed back 100 milliseconds" };
+  });
+  registerAction("scrubForward100ms", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleScrub(0.1);
+    return { executed: true, resultText: "Scrubbed forward 100 milliseconds" };
+  });
+  registerAction("scrubBack10ms", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleScrub(-0.01);
+    return { executed: true, resultText: "Scrubbed back 10 milliseconds" };
+  });
+  registerAction("scrubForward10ms", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleScrub(0.01);
+    return { executed: true, resultText: "Scrubbed forward 10 milliseconds" };
+  });
+  registerAction("auditionPlayback", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleAuditionPlayback();
+    return { executed: true, resultText: "Audition" };
+  });
+  registerAction("locateAndLand", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleLocateAndLand();
+    return { executed: true, resultText: "Play and Land" };
+  });
+  registerAction("setMarkStart", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleSetSelectionStart();
+    return { executed: true, resultText: "Mark start set" };
+  });
+  registerAction("setMarkEnd", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleSetSelectionEnd();
+    return { executed: true, resultText: "Mark end set" };
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -289,6 +390,20 @@ function handleJump(toSec) {
 
 function handleAnnouncePosition() {
   if (!activeDoc) return;
+  announceStatus(formatTimePrecise(activeDoc.cursorSec));
+}
+
+/**
+ * Moves the playhead by `deltaSec` and immediately plays a short clip
+ * starting at the new position — the audible-scrubbing behavior itself.
+ * See BufferPlayer.scrubClip for why a short real-audio clip, not a
+ * silent jump, is what "audible" means here.
+ */
+function handleScrub(deltaSec) {
+  if (!activeDoc) return;
+  activeDoc.moveCursor(deltaSec);
+  player.scrubClip(activeDoc.buffer, activeDoc.cursorSec);
+  updatePositionDisplay();
   announceStatus(formatTimePrecise(activeDoc.cursorSec));
 }
 
@@ -338,24 +453,81 @@ function handleAnnounceSelection() {
 }
 
 // ---------------------------------------------------------------------
-// Play / Preview
+// Playback: SPACE (audition) and X (locate-and-land) are deliberately
+// different commands, not one generic Play/Pause — see the Pro Roadmap,
+// Stage 1, "Edit Position and Playback Position." Both start playback
+// from the current playhead; they differ only in what happens to the
+// playhead when playback stops:
+//   - SPACE (audition): stopping never moves the playhead. Repeated
+//     Space lets the user audition from the same established editing
+//     context as many times as needed.
+//   - X (locate and land): stopping — by pressing X again, or by
+//     playback reaching the end on its own — moves the playhead to
+//     exactly where it stopped. This is what lets a user listen until
+//     roughly the right spot, land there with X, then use U/I scrubbing
+//     to find the exact boundary.
+// `playbackMode` tracks which of the two is currently playing, since
+// both share the same underlying BufferPlayer session.
 // ---------------------------------------------------------------------
 
-function handleEditorPlayPause() {
+let playbackMode = null; // "audition" | "locate" | null
+
+function updateTransportButtonLabels() {
+  el.auditionButton.textContent = playbackMode === "audition" ? "Stop Audition (Space)" : "Audition (Space)";
+  el.editorPlayPauseButton.textContent = playbackMode === "locate" ? "Stop and Land (X)" : "Play and Land (X)";
+}
+
+/** Stops whatever is currently playing (Space or X). `landPlayhead` controls whether the playhead moves to the stop position — the one behavioral difference between the two commands. */
+function stopActivePlayback({ landPlayhead }) {
+  if (!player.isPlaying()) return;
+  const stoppedAtSec = player.getPositionSec();
+  player.stop();
+  if (landPlayhead && activeDoc) {
+    activeDoc.cursorSec = stoppedAtSec;
+  }
+  playbackMode = null;
+  updateTransportButtonLabels();
+  updatePositionDisplay();
+}
+
+function handleAuditionPlayback() {
   if (!activeDoc) return;
 
-  if (player.isPlaying()) {
-    activeDoc.cursorSec = player.getPositionSec();
-    player.stop();
-    el.editorPlayPauseButton.textContent = "Play";
-    updatePositionDisplay();
-    announceStatus("Playback paused.");
+  if (player.isPlaying() && playbackMode === "audition") {
+    stopActivePlayback({ landPlayhead: false });
+    announceStatus("Audition stopped.");
     return;
+  }
+  if (player.isPlaying()) {
+    // X was playing — stop it without landing, since the user's next
+    // action (starting Space) supersedes it, then start audition fresh.
+    stopActivePlayback({ landPlayhead: false });
   }
 
   player.play(activeDoc.buffer, activeDoc.cursorSec, activeDoc.durationSec);
-  el.editorPlayPauseButton.textContent = "Pause";
-  announceStatus("Playback started.");
+  playbackMode = "audition";
+  updateTransportButtonLabels();
+  announceStatus("Auditioning.");
+}
+
+function handleLocateAndLand() {
+  if (!activeDoc) return;
+
+  if (player.isPlaying() && playbackMode === "locate") {
+    stopActivePlayback({ landPlayhead: true });
+    announceStatus(`Landed at ${formatTimePrecise(activeDoc.cursorSec)}.`);
+    return;
+  }
+  if (player.isPlaying()) {
+    // Space was playing — stop it without landing (that's Space's own
+    // rule, not X's), then start Play and Land fresh.
+    stopActivePlayback({ landPlayhead: false });
+  }
+
+  player.play(activeDoc.buffer, activeDoc.cursorSec, activeDoc.durationSec);
+  playbackMode = "locate";
+  updateTransportButtonLabels();
+  announceStatus("Playing.");
 }
 
 function handlePreviewSelection() {
@@ -365,6 +537,7 @@ function handlePreviewSelection() {
     return;
   }
   player.play(activeDoc.buffer, activeDoc.selection.startSec, activeDoc.selection.endSec);
+  playbackMode = null; // preview lands neither Space nor X semantics; it's its own, separate action
   el.editorPreviewButton.textContent = "Stop Preview";
   announceStatus("Previewing selection.");
 }
@@ -485,7 +658,8 @@ function handleRedo() {
 
 function refreshAfterEdit() {
   player.stop();
-  el.editorPlayPauseButton.textContent = "Play";
+  playbackMode = null;
+  updateTransportButtonLabels();
   el.editorPreviewButton.textContent = "Preview Selection";
   updateWindowTitle(); // title's "(unsaved changes)" marker is the only per-document status surface now
   updatePositionDisplay();
@@ -608,12 +782,14 @@ function updateButtonStates() {
 
   [
     ...el.navButtons,
+    ...el.scrubButtons,
     el.jumpBeginningButton,
     el.jumpEndButton,
     el.announcePositionButton,
     el.setSelectionStartButton,
     el.setSelectionEndButton,
     el.selectAllButton,
+    el.auditionButton,
     el.editorPlayPauseButton,
     el.saveButton,
     el.saveAsButton,
