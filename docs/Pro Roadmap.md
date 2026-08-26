@@ -1689,24 +1689,244 @@ don't work after this build, that's genuinely new information (the
 capture-phase theory would be wrong), not a sign the investigation was
 skipped.
 
+## 0.2.5 — the accessible playhead slider and visual timeline
+
+0.2.4's capture-phase fix for the global bare-arrow-key listener did not
+resolve the real-world problem: Left/Right Arrow still didn't move the
+playhead. Rather than attempt a fourth theory about *timing* of a global
+keydown listener, this build changes the underlying *mechanism*: the
+playhead is now a real, native `<input type="range">` slider, which has
+its own guaranteed keyboard input path while it holds focus — not
+competing with anything for arrow-key delivery the way a global listener
+does.
+
+### Root cause of 0.2.3/0.2.4 arrow failure
+
+Not fully confirmed (this environment cannot run WebView2), but now
+understood more precisely than before: arrow keys are the one class of
+key that Windows' own accessibility/focus-traversal layer treats as
+universally meaningful navigation. Letter keys (U, I, X) and Space have
+no such inherent platform role, which is exactly why those worked
+reliably as global bare-key shortcuts while arrows didn't — a global
+listener, however early in the capture phase, was never actually
+competing with anything for U/I/X/Space, but plausibly was for arrows.
+A native form control's own scoped keydown handling isn't competing with
+that layer at all; it's the platform's own guaranteed path for that
+control while it has focus.
+
+### Authoritative playhead design
+
+`AudioDocument.cursorSec` was already the only position variable before
+this build (confirmed by inspection, not assumed) — the gap was never
+competing state, it was that not every interaction routed through one
+place. `setPlayhead(newSec)` in `editorWindow.js` is now that one place:
+every navigation button, the slider, the visual timeline's click-to-seek,
+X's landing behavior, and Mark placement all call it, and it is the only
+code that ever assigns `activeDoc.cursorSec` — confirmed by grep after
+the refactor, not just by writing it that way and hoping. Live playback
+position during Space/X (`player.getPositionSec()`) is deliberately kept
+separate: a `requestAnimationFrame` ticker (`startPlaybackTicker`)
+visually moves the slider thumb and timeline playhead during playback for
+sighted/low-vision feedback, but never itself calls `setPlayhead` — only
+X's own landing logic does that, when playback actually stops. This is
+the concrete implementation of "playback may have a continuously
+changing cursor, but that is not automatically the authoritative editing
+playhead."
+
+### Accessible seek slider
+
+`#playhead-slider` in `editor.html` — a genuine `<input type="range">`,
+not a styled div. `min`/`max`/`value` are kept in seconds; the
+accessible announcement uses `aria-valuetext`, set to
+`formatTimePrecise(activeDoc.cursorSec)` — the same formatter already
+confirmed correct in real JAWS testing ("Landed at 1 minute 5.091
+seconds.") — so the slider announces human-readable time, not a raw
+number, without needing custom wording beyond what a native slider
+already provides. Left/Right/Home/End are intercepted on the slider's
+own `keydown` (10s/30s/beginning/end, per spec) with `preventDefault()`,
+overriding the native default 0.01s step; every other key (Up/Down/
+PageUp/PageDown) is left to native handling, which still updates the one
+authoritative playhead via the slider's `input` event. `aria-valuetext`
+is deliberately only updated from `setPlayhead`, never from the live
+playback ticker, so continuous playback doesn't become continuous
+announcements.
+
+### Visual timeline
+
+`#timeline-canvas` — a `<canvas>` drawing the document track, the
+selected interval, Marks, and the playhead, all in one seconds-to-pixels
+coordinate mapping shared with the click-to-seek handler and, eventually,
+a real waveform. `aria-hidden="true"` and `tabindex="-1"`: it is a visual
+convenience for sighted/low-vision users, not a second, competing
+interface — the slider is the accessible mechanism, exactly as
+"multiple equivalent ways to operate the same state" requires. Nothing
+is distinguished by color alone: the playhead is a diamond-topped line,
+Marks are triangular flags (a different shape entirely), and the
+selected interval is both shaded and outlined. The canvas's internal
+pixel buffer is matched to its actual rendered CSS size at draw time (and
+on window resize), so drawing stays crisp and click math stays correct
+under magnification/reflow, not just at one fixed size.
+
+### Waveform status
+
+Not implemented this round — explicitly deferred, not fabricated. The
+timeline architecture (the seconds-to-pixels coordinate function inside
+`drawTimeline`) is built so a real waveform can be added later by drawing
+peak data into the same track region using the same coordinate mapping,
+without needing to touch the playhead/slider/click logic at all. No
+placeholder or fake waveform data was drawn.
+
+### Mouse/pointer interaction
+
+Clicking anywhere on the timeline canvas converts the click's position
+into a fraction of the canvas's actual rendered width, then to seconds,
+then calls the same `setPlayhead` every other interface uses — verified
+directly with the exact scenario from the correction directive itself
+(a 5-minute document, a click 40% across, expected to land at 2 minutes)
+via an isolated Node.js test; it passed. There is no separate "mouse
+position" state, confirmed by there being no separate state to have.
+
+### Keyboard interaction
+
+Left/Right (10s)/Ctrl+Left/Right (30s)/Home/End on the focused slider —
+the new primary path. The existing global bare-key shortcuts
+(`navBack10`/`navForward10`/etc., from Stage 1) are left in place as a
+secondary path — not verified to work reliably (that's the whole
+0.2.3/0.2.4 problem), but not removed either, since the correction
+directive said "not solely," not "never." U/I scrubbing and `[`/`]`
+Marks are completely unchanged — confirmed by diff against 0.2.4,
+`audioBufferPlayer.js` (the scrub engine) and `audioDocument.js` (the
+selection/Mark data model) are byte-identical.
+
+### Space/X behavior
+
+Unchanged in logic — the existing `stopActivePlayback`/
+`handleAuditionPlayback`/`handleLocateAndLand` state machine (tested in
+isolation for 0.2.3) was only touched to route its landing call through
+`setPlayhead` instead of a direct `cursorSec` assignment, and to start
+the new playback ticker. Both are additive; neither changes when or
+whether the playhead moves on Space vs. X.
+
+### Mark/selection foundation
+
+`[`/`]` still alias directly onto the existing `setSelectionStart`/
+`setSelectionEnd` (no rewrite, per the Stage 1 constraint carried
+forward), and the timeline now visualizes whatever that state actually
+is. One honest limitation, stated directly rather than glossed over:
+`AudioDocument.selection` only ever holds a complete `{startSec,
+endSec}` pair or `null` — pressing `[` alone already creates a full
+interval (extending to document end by default), not a "first Mark
+placed, waiting for the second" intermediate state. The timeline draws
+both boundaries together whenever a selection exists, faithfully
+reflecting what the data model actually represents; a genuinely distinct
+single-boundary visual (matching the two-stage UX described in the
+correction directive precisely) would need a data-model change this
+build deliberately did not make.
+
+### Accessibility
+
+No color-only state anywhere new (see "Visual timeline" above). Slider
+and canvas both sized well above the project's minimum touch target.
+axe-core: 0 violations on both `index.html` (36 passes, unchanged) and
+`editor.html` (37 passes — one more than 0.2.4, the new slider itself
+registering as a correctly-implemented accessible control).
+
+### Local tests actually run
+
+An isolated Node.js test suite (not using jsdom, since jsdom's canvas
+support requires a native dependency not available here) covering the
+exact math this build's correctness depends on: `setPlayhead` clamping
+at both document boundaries (3 cases), the slider keydown override
+producing the exact specified deltas including clamping near both
+boundaries (8 cases), and click-to-seek fraction conversion including
+the literal 5-minute/40%/2-minute example from the correction directive
+(3 cases) — 14/14 passed. Every tested function was then confirmed
+character-for-character identical to what actually shipped, by
+extracting the real source. `main.rs` structural checks, JS syntax
+checks across every file, and duplicate-ID checks across both HTML
+pages were also run — all clean.
+
+### Windows build status
+
+Not run. No Rust toolchain that can target Windows exists in this
+environment, and there is no way to trigger GitHub Actions from here.
+
+### Real Windows/JAWS testing still required
+
+Everything about the actual runtime behavior: whether the slider
+genuinely receives Left/Right/Home/End reliably with the virtual cursor
+off (the core hypothesis this build is built on), what JAWS actually
+announces when the slider gains focus and when its value changes,
+whether clicking the timeline canvas behaves as expected with a real
+mouse, whether the visual playhead/Marks/selection are legible and
+correctly positioned on a real screen, and whether magnification/reflow
+genuinely keeps the timeline usable. None of this can be verified in
+this environment — canvas rendering couldn't even be exercised here at
+all, only its underlying coordinate math.
+
+### Files changed
+
+`editor.html` (slider + canvas markup), `app/js/editorWindow.js` (the
+authoritative-playhead refactor, slider/canvas binding, timeline
+drawing, playback ticker), `app/css/styles.css` (slider/canvas styling).
+Confirmed by diff: `main.rs`, `shortcutService.js`, `index.html`,
+`audioDocument.js`, `audioBufferPlayer.js`, `audioClipboard.js`, and
+`main.js` are all byte-identical to 0.2.4.
+
+### Deferred roadmap items
+
+Everything explicitly listed as out of scope: the Audio Bridge, full
+Primary Editor workflow, Monitor, level matching, stereo monitoring,
+full menu architecture, major visual redesign, advanced waveform editing
+tools, timeline zoom, drag-based selection editing, new clipboard
+architecture, new Open Audio behavior. Also not built this round, as
+described above: real waveform rendering, and a genuinely distinct
+single-Mark visual state.
+
+### Risks / open questions
+
+1. The core hypothesis (native slider focus reliably receives arrow keys
+   where a global listener didn't) is well-reasoned but unconfirmed —
+   real testing could show it's wrong, the same honest possibility every
+   previous arrow-key fix carried.
+2. The global bare-key nav shortcuts from Stage 1 are still present and
+   unverified; if they still don't work reliably, that's expected and
+   not a regression — the slider is now the primary path specifically
+   because they couldn't be trusted alone.
+3. `handlePreviewSelection`'s own "Stop Preview" button click does not
+   currently stop playback if clicked while already playing (it just
+   calls `player.play()` again) — this predates this build, was not
+   introduced by it, and was not fixed here since it wasn't in scope for
+   this stage; noting it now so it isn't mistaken for new.
+4. The waveform-less timeline and the single-boundary Mark limitation
+   are both real, named simplifications, not oversights — see above.
+
 ## Recommended next phase
 
-Build 0.2.4 via GitHub Actions and, with the JAWS virtual cursor off (the
-exact configuration where Left/Right previously failed), confirm they
-now move the playhead 10 seconds each way, and that Ctrl+Left/Right,
-Home, and End still work as they reportedly already did. If arrows now
-work, this specific defect is closed — but this environment could only
-reason about *why* they might have failed, not confirm the capture-phase
-fix actually resolves it, so this needs a real pass before calling it
-done. If arrows still don't move the playhead, that disproves the
-capture-phase hypothesis specifically, and the next step would be
-determining whether the event reaches the page at all (e.g., a
-`console.log` at the very top of `handleKeydown` visible via devtools)
-rather than trying another blind theory. Everything confirmed working in
-the 0.2.3 test (X, Space, U/I scrubbing at all precision levels,
-multi-file opening, time-format announcements) should be reconfirmed
-unaffected, though nothing in this build touched any of that code.
-Separately — carried over from 0.2.3, still open — confirm scrubbing
-genuinely produces audible sound (unverifiable in this environment) and
-run the full Stage 1 shortcut set with the virtual cursor *on*, per the
-roadmap's own Stage 1 exit criterion, not just off.
+Build 0.2.5 via GitHub Actions. With the JAWS virtual cursor off, Tab to
+the playhead slider in an open editor window and confirm Left/Right
+moves the playhead 10 seconds, Ctrl+Left/Right moves it 30, and Home/End
+jump to the boundaries — this is the actual test of this build's core
+hypothesis, and the single most important thing to determine before
+anything else. Listen for what JAWS announces on focus and on each
+value change; it should be the human-readable time format, not a raw
+number, and should not be needlessly verbose. Separately, confirm the
+old global bare-key nav shortcuts (Left/Right/etc. from anywhere else in
+the window) — expected to still be unreliable, not a regression if so,
+since the slider is now the primary path specifically because those
+couldn't be trusted alone. With a mouse, click at a few points along the
+visual timeline and confirm the playhead, the slider's value, and the
+position announcement all move together to the expected position — the
+5-minute/40%/2-minute scenario from the correction directive is a good
+concrete check. Place both Marks and confirm the timeline shows a shaded
+selected interval with visible boundary flags, not merely a color
+change. Reconfirm X, Space, and U/I scrubbing all still behave exactly
+as in the successful 0.2.3 test — none of that logic changed, but this
+build touched the file all three live in. If the slider genuinely
+receives arrow keys reliably where the global listener didn't, that
+confirms the architectural direction and real waveform rendering is the
+natural next step, using the same coordinate mapping already built into
+`drawTimeline`. If it doesn't, that's a harder problem — a native form
+control not receiving its own keyboard input would be a much more
+unusual and worth deeply investigating on its own terms, not patched
+again blind.

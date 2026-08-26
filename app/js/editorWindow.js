@@ -53,8 +53,7 @@ async function main() {
   // playing, and getPositionSec() reports the range *start* in that case.
   player.onEnded = () => {
     if (playbackMode === "locate" && activeDoc) {
-      activeDoc.cursorSec = player.rangeEndSec;
-      updatePositionDisplay();
+      setPlayhead(player.rangeEndSec);
     }
     playbackMode = null;
     updateTransportButtonLabels();
@@ -176,6 +175,9 @@ function cacheElements() {
     positionInfo: document.getElementById("position-info"),
     selectionInfo: document.getElementById("selection-info"),
 
+    playheadSlider: document.getElementById("playhead-slider"),
+    timelineCanvas: document.getElementById("timeline-canvas"),
+
     navButtons: Array.from(document.querySelectorAll("[data-nav]")),
     scrubButtons: Array.from(document.querySelectorAll("[data-scrub]")),
     jumpBeginningButton: document.getElementById("jump-doc-beginning-button"),
@@ -214,6 +216,19 @@ function cacheElements() {
 }
 
 function bindEvents() {
+  bindPlayheadSlider();
+  bindTimelineClick();
+
+  // Keeps the visual timeline correctly sized and drawn as the window is
+  // resized or the OS zoom/magnification level changes — directly
+  // relevant to this app's low-vision/magnification requirements, since
+  // the canvas's internal pixel buffer is matched to its rendered CSS
+  // size at draw time (see drawTimeline), which only happens when
+  // something explicitly triggers a redraw.
+  window.addEventListener("resize", () => {
+    if (activeDoc) drawTimeline();
+  });
+
   el.navButtons.forEach((button) => {
     button.addEventListener("click", () => handleNavigate(parseFloat(button.dataset.nav)));
   });
@@ -371,20 +386,255 @@ function registerShortcutActions() {
 }
 
 // ---------------------------------------------------------------------
+// The authoritative playhead (0.2.5, Pro Roadmap)
+//
+// ONE AUDIO DOCUMENT → ONE TIMELINE → ONE AUTHORITATIVE EDITING PLAYHEAD
+// → MULTIPLE EQUIVALENT WAYS TO OPERATE IT.
+//
+// setPlayhead() is the only place activeDoc.cursorSec is ever assigned
+// from this point on in this file — every navigation button, the
+// playhead slider, the visual timeline's click-to-seek, X's landing
+// behavior, and Mark placement all funnel through it, so none of those
+// interfaces can ever drift out of sync with each other. It does not
+// itself announce anything; callers keep their own, already-existing,
+// context-specific announcements (see the 0.1.x baseline this format
+// carries over from) — this stays purely about state and visual sync,
+// not speech, so nothing here changes what JAWS already announces
+// correctly per the 0.2.3/0.2.4 real-world test.
+//
+// Live playback position (while X or Space audition is actually
+// playing) is a DIFFERENT, separate, continuously-changing value —
+// player.getPositionSec() — that the slider and timeline visually track
+// via startPlaybackTicker() below for sighted/low-vision feedback, but
+// which never itself writes to activeDoc.cursorSec. Only X's own
+// landing logic (stopActivePlayback) calls setPlayhead when playback
+// actually stops — this is the concrete implementation of "playback may
+// have a continuously changing cursor, but that is not automatically
+// the authoritative editing playhead."
+// ---------------------------------------------------------------------
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function setPlayhead(newSec) {
+  if (!activeDoc) return;
+  activeDoc.cursorSec = clamp(newSec, 0, activeDoc.durationSec);
+  syncPlayheadUI();
+}
+
+/** Keeps the slider's value/accessible text and the visual timeline in sync with the authoritative playhead. Called by setPlayhead() and after any edit that could change duration/selection. */
+function syncPlayheadUI() {
+  if (!activeDoc) return;
+  if (el.playheadSlider) {
+    el.playheadSlider.max = String(activeDoc.durationSec);
+    el.playheadSlider.value = String(activeDoc.cursorSec);
+    // aria-valuetext, not the raw numeric value, is what a screen reader
+    // announces for this slider — this is what turns "50.4" into
+    // "50.400 seconds" using the same formatter already confirmed
+    // correct in real JAWS testing. Deliberately only updated here (a
+    // real editing-position change), never from the live playback
+    // ticker below, so continuous playback doesn't turn into continuous
+    // announcements.
+    el.playheadSlider.setAttribute("aria-valuetext", formatTimePrecise(activeDoc.cursorSec));
+  }
+  updatePositionDisplay();
+  drawTimeline();
+}
+
+/**
+ * The playhead slider is a real, native <input type="range"> specifically
+ * so Left/Right/Home/End are the browser's own guaranteed keyboard input
+ * path while it holds focus — not competing with Windows' own
+ * accessibility/focus-traversal layer for arrow keys the way a global
+ * bare-key listener does (see docs/Pro Roadmap.md, 0.2.5, for why the
+ * 0.2.3/0.2.4 global-interception approach didn't reliably work). The
+ * native default step (0.01s, matching the finest scrub precision) is
+ * overridden here with the specified 10s/30s/beginning/end behavior;
+ * every other native key (Up/Down/PageUp/PageDown) is left alone and
+ * still moves the same authoritative playhead via the `input` listener.
+ */
+function bindPlayheadSlider() {
+  if (!el.playheadSlider) return;
+
+  el.playheadSlider.addEventListener("keydown", (event) => {
+    if (!activeDoc) return;
+    switch (event.key) {
+      case "ArrowLeft":
+        event.preventDefault();
+        setPlayhead(activeDoc.cursorSec - (event.ctrlKey ? 30 : 10));
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        setPlayhead(activeDoc.cursorSec + (event.ctrlKey ? 30 : 10));
+        break;
+      case "Home":
+        event.preventDefault();
+        setPlayhead(0);
+        break;
+      case "End":
+        event.preventDefault();
+        setPlayhead(activeDoc.durationSec);
+        break;
+      default:
+        break; // native default handling (Up/Down/PageUp/PageDown/etc.)
+    }
+  });
+
+  // Mouse drag, and any native key left un-overridden above, changes the
+  // slider's own DOM value directly; this syncs that back into the one
+  // authoritative playhead the same way every other interaction does.
+  el.playheadSlider.addEventListener("input", () => {
+    if (!activeDoc) return;
+    setPlayhead(parseFloat(el.playheadSlider.value));
+  });
+}
+
+/**
+ * A sighted user clicking anywhere on the visual timeline moves the same
+ * authoritative playhead a keyboard/screen-reader user moves via the
+ * slider — "there is no separate mouse position state," per the Pro
+ * Roadmap. The click position is converted to a fraction of the
+ * timeline's actual rendered width, then to seconds, independent of the
+ * canvas's internal pixel buffer size (see drawTimeline for why those
+ * can differ).
+ */
+function bindTimelineClick() {
+  if (!el.timelineCanvas) return;
+  el.timelineCanvas.addEventListener("click", (event) => {
+    if (!activeDoc) return;
+    const rect = el.timelineCanvas.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    setPlayhead(fraction * activeDoc.durationSec);
+    announceStatus(formatTimePrecise(activeDoc.cursorSec));
+  });
+}
+
+/**
+ * Draws the visual timeline: the document track, the selected interval
+ * (if any), Marks, and the playhead — all using the same seconds-to-
+ * pixels coordinate mapping the future waveform would use. Every state
+ * that isn't the plain track background is distinguished by shape or
+ * outline as well as color (a diamond-topped line for the playhead, a
+ * triangular flag for each Mark, an outlined-and-shaded region for the
+ * selected interval), per this app's "never color alone" requirement.
+ *
+ * `overridePlayheadSec`, when given, draws the playhead at that position
+ * instead of activeDoc.cursorSec — used only by the live playback
+ * ticker below, so a moving playback position can be shown visually
+ * without it ever becoming the authoritative editing playhead.
+ */
+function drawTimeline(overridePlayheadSec) {
+  const canvas = el.timelineCanvas;
+  if (!canvas || !activeDoc) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  // Match the canvas's internal pixel buffer to its actual rendered CSS
+  // size so drawing stays crisp at whatever width this app's responsive
+  // layout gives it, and so this math always agrees with the click
+  // handler's fraction-of-rendered-width math above.
+  const cssWidth = Math.max(1, Math.round(canvas.clientWidth || canvas.width));
+  const cssHeight = Math.max(1, Math.round(canvas.clientHeight || canvas.height));
+  if (canvas.width !== cssWidth) canvas.width = cssWidth;
+  if (canvas.height !== cssHeight) canvas.height = cssHeight;
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const duration = Math.max(activeDoc.durationSec, 0.001); // avoid divide-by-zero for a brand-new empty document
+
+  ctx.clearRect(0, 0, width, height);
+
+  const trackTop = height * 0.35;
+  const trackHeight = height * 0.3;
+  const secToX = (sec) => (clamp(sec, 0, duration) / duration) * width;
+
+  ctx.fillStyle = "#E7EEE9";
+  ctx.fillRect(0, trackTop, width, trackHeight);
+  ctx.strokeStyle = "#6E7B82"; // --color-border
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, trackTop + 0.5, width - 1, trackHeight - 1);
+
+  // Selected interval — shaded fill AND an outline, not color alone.
+  // Note (see docs/Pro Roadmap.md, 0.2.5): the current selection model
+  // (AudioDocument.selection) only ever holds a complete {startSec,
+  // endSec} pair or null — there is no distinct "only the first Mark
+  // has been placed yet" state to draw a single boundary marker for
+  // without changing that data model, which this stage deliberately
+  // does not do. Both boundaries are always drawn together, faithfully
+  // reflecting what the underlying state actually is.
+  if (activeDoc.hasSelection()) {
+    const startX = secToX(activeDoc.selection.startSec);
+    const endX = secToX(activeDoc.selection.endSec);
+    ctx.fillStyle = "rgba(11, 93, 59, 0.25)";
+    ctx.fillRect(startX, trackTop, Math.max(1, endX - startX), trackHeight);
+    ctx.strokeStyle = "#0B5D3B"; // --color-accent
+    ctx.lineWidth = 2;
+    ctx.strokeRect(startX, trackTop, Math.max(1, endX - startX), trackHeight);
+
+    // Marks: triangular flags — shape-distinct from the diamond-topped
+    // playhead line drawn below, not just a different color.
+    ctx.fillStyle = "#8A5A00"; // --color-focus
+    [startX, endX].forEach((x) => {
+      ctx.beginPath();
+      ctx.moveTo(x, trackTop - 2);
+      ctx.lineTo(x - 6, trackTop - 12);
+      ctx.lineTo(x + 6, trackTop - 12);
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+
+  const playheadSec = overridePlayheadSec !== undefined ? overridePlayheadSec : activeDoc.cursorSec;
+  const playheadX = secToX(playheadSec);
+  ctx.strokeStyle = "#0B5D3B";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(playheadX, 4);
+  ctx.lineTo(playheadX, height - 4);
+  ctx.stroke();
+  ctx.fillStyle = "#0B5D3B";
+  ctx.beginPath();
+  ctx.moveTo(playheadX, 4);
+  ctx.lineTo(playheadX - 5, 13);
+  ctx.lineTo(playheadX + 5, 13);
+  ctx.closePath();
+  ctx.fill();
+}
+
+let playbackTickerId = null;
+
+/** While X or Space audition is actually playing, visually tracks the live, continuously-changing playback position on the slider thumb and timeline — WITHOUT writing to activeDoc.cursorSec. See the section doc comment above for why that distinction matters. */
+function startPlaybackTicker() {
+  if (playbackTickerId !== null) return;
+  const tick = () => {
+    if (!player.isPlaying() || !activeDoc) {
+      playbackTickerId = null;
+      syncPlayheadUI(); // restore the true authoritative playhead's display once playback has stopped
+      return;
+    }
+    const liveSec = player.getPositionSec();
+    if (el.playheadSlider) el.playheadSlider.value = String(liveSec);
+    drawTimeline(liveSec);
+    playbackTickerId = requestAnimationFrame(tick);
+  };
+  playbackTickerId = requestAnimationFrame(tick);
+}
+
+// ---------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------
 
 function handleNavigate(deltaSec) {
   if (!activeDoc) return;
-  activeDoc.moveCursor(deltaSec);
-  updatePositionDisplay();
+  setPlayhead(activeDoc.cursorSec + deltaSec);
   announceStatus(formatTimePrecise(activeDoc.cursorSec));
 }
 
 function handleJump(toSec) {
   if (!activeDoc) return;
-  activeDoc.cursorSec = Math.max(0, Math.min(activeDoc.durationSec, toSec));
-  updatePositionDisplay();
+  setPlayhead(toSec);
   announceStatus(formatTimePrecise(activeDoc.cursorSec));
 }
 
@@ -401,9 +651,8 @@ function handleAnnouncePosition() {
  */
 function handleScrub(deltaSec) {
   if (!activeDoc) return;
-  activeDoc.moveCursor(deltaSec);
+  setPlayhead(activeDoc.cursorSec + deltaSec);
   player.scrubClip(activeDoc.buffer, activeDoc.cursorSec);
-  updatePositionDisplay();
   announceStatus(formatTimePrecise(activeDoc.cursorSec));
 }
 
@@ -415,6 +664,7 @@ function handleSetSelectionStart() {
   if (!activeDoc) return;
   activeDoc.setSelectionStart(activeDoc.cursorSec);
   updateSelectionDisplay();
+  drawTimeline();
   announceStatus(`Selection start set. ${formatTimePrecise(activeDoc.selection.startSec)}.`);
 }
 
@@ -422,6 +672,7 @@ function handleSetSelectionEnd() {
   if (!activeDoc) return;
   activeDoc.setSelectionEnd(activeDoc.cursorSec);
   updateSelectionDisplay();
+  drawTimeline();
   announceStatus(`Selection end set. ${formatTimePrecise(activeDoc.selection.endSec)}.`);
 }
 
@@ -429,6 +680,7 @@ function handleSelectAll() {
   if (!activeDoc) return;
   activeDoc.selectAll();
   updateSelectionDisplay();
+  drawTimeline();
   announceStatus(`All selected. ${formatTimePrecise(activeDoc.selectionDurationSec())} selected.`);
 }
 
@@ -436,6 +688,7 @@ function handleClearSelection() {
   if (!activeDoc) return;
   activeDoc.clearSelection();
   updateSelectionDisplay();
+  drawTimeline();
   announceStatus("Selection cleared.");
 }
 
@@ -483,11 +736,12 @@ function stopActivePlayback({ landPlayhead }) {
   const stoppedAtSec = player.getPositionSec();
   player.stop();
   if (landPlayhead && activeDoc) {
-    activeDoc.cursorSec = stoppedAtSec;
+    setPlayhead(stoppedAtSec);
+  } else {
+    syncPlayheadUI(); // restore slider/timeline to the (unchanged) authoritative playhead after a non-landing stop
   }
   playbackMode = null;
   updateTransportButtonLabels();
-  updatePositionDisplay();
 }
 
 function handleAuditionPlayback() {
@@ -507,6 +761,7 @@ function handleAuditionPlayback() {
   player.play(activeDoc.buffer, activeDoc.cursorSec, activeDoc.durationSec);
   playbackMode = "audition";
   updateTransportButtonLabels();
+  startPlaybackTicker();
   announceStatus("Auditioning.");
 }
 
@@ -527,6 +782,7 @@ function handleLocateAndLand() {
   player.play(activeDoc.buffer, activeDoc.cursorSec, activeDoc.durationSec);
   playbackMode = "locate";
   updateTransportButtonLabels();
+  startPlaybackTicker();
   announceStatus("Playing.");
 }
 
@@ -539,6 +795,7 @@ function handlePreviewSelection() {
   player.play(activeDoc.buffer, activeDoc.selection.startSec, activeDoc.selection.endSec);
   playbackMode = null; // preview lands neither Space nor X semantics; it's its own, separate action
   el.editorPreviewButton.textContent = "Stop Preview";
+  startPlaybackTicker();
   announceStatus("Previewing selection.");
 }
 
@@ -592,7 +849,7 @@ async function handlePaste() {
     const insertAt = activeDoc.hasSelection() ? activeDoc.selection.startSec : activeDoc.cursorSec;
     const newBuffer = bufUtil.insertBufferAt(activeDoc.buffer, reconciled, insertAt);
     activeDoc.applyEdit(newBuffer);
-    activeDoc.cursorSec = insertAt + reconciled.length / reconciled.sampleRate;
+    setPlayhead(insertAt + reconciled.length / reconciled.sampleRate);
 
     refreshAfterEdit();
     announceStatus(converted ? "Audio converted to match destination. Audio pasted." : "Audio pasted.");
@@ -613,7 +870,7 @@ function handleDeleteSelection() {
   const { startSec, endSec } = activeDoc.selection;
   const newBuffer = bufUtil.deleteRange(activeDoc.buffer, startSec, endSec);
   activeDoc.applyEdit(newBuffer);
-  activeDoc.cursorSec = startSec;
+  setPlayhead(startSec);
 
   refreshAfterEdit();
   announceStatus("Selection deleted.");
@@ -628,7 +885,7 @@ function handleTrim() {
   const { startSec, endSec } = activeDoc.selection;
   const newBuffer = bufUtil.sliceBuffer(activeDoc.buffer, startSec, endSec);
   activeDoc.applyEdit(newBuffer);
-  activeDoc.cursorSec = 0;
+  setPlayhead(0);
 
   refreshAfterEdit();
   announceStatus("Trimmed to selection.");
@@ -662,9 +919,9 @@ function refreshAfterEdit() {
   updateTransportButtonLabels();
   el.editorPreviewButton.textContent = "Preview Selection";
   updateWindowTitle(); // title's "(unsaved changes)" marker is the only per-document status surface now
-  updatePositionDisplay();
   updateSelectionDisplay();
   updateButtonStates();
+  syncPlayheadUI(); // an edit can change duration (delete/trim/paste), so the slider's max and the timeline both need to re-derive from the document's new state, not just the playhead position
 }
 
 // ---------------------------------------------------------------------
@@ -753,9 +1010,9 @@ function stripExtension(filename) {
 function render() {
   if (!activeDoc) return;
   el.documentHeading.textContent = activeDoc.title;
-  updatePositionDisplay();
   updateSelectionDisplay();
   updateButtonStates();
+  syncPlayheadUI(); // sets the slider's max (document duration) for the first time and draws the initial timeline
 }
 
 function updatePositionDisplay() {
@@ -793,6 +1050,7 @@ function updateButtonStates() {
     el.editorPlayPauseButton,
     el.saveButton,
     el.saveAsButton,
+    el.playheadSlider,
   ].forEach((button) => (button.disabled = !has));
 
   el.clearSelectionButton.disabled = !hasSelection;

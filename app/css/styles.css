@@ -148,6 +148,48 @@ textarea {
   font-family: inherit;
 }
 
+/*
+ * The authoritative playhead slider (editor.html). A real native
+ * <input type="range">, not a styled div, specifically so its keyboard
+ * and screen-reader behavior is the browser's own guaranteed input path
+ * — see the doc comment on #playhead-slider in editor.html. Sized well
+ * above the project's minimum touch target and given a visibly thick,
+ * high-contrast track/thumb so its state reads clearly under
+ * magnification, matching this app's "no color-only state" rule.
+ */
+input[type="range"] {
+  display: block;
+  width: 100%;
+  max-width: 48rem;
+  min-height: var(--min-target);
+  margin-top: 0.5rem;
+  accent-color: var(--color-accent);
+}
+
+input[type="range"]:focus-visible {
+  outline: var(--focus-outline);
+  outline-offset: 3px;
+}
+
+/*
+ * The visual timeline (editor.html). Fixed intrinsic size in markup,
+ * scaled responsively here so it never overflows or shrinks below a
+ * usable size under magnification/reflow — its own drawing logic
+ * (editorWindow.js) reads the canvas's actual rendered pixel width at
+ * draw time, so this CSS sizing and that JS math always agree.
+ */
+#timeline-canvas {
+  display: block;
+  width: 100%;
+  max-width: 48rem;
+  height: 90px;
+  margin-top: 0.75rem;
+  border: 2px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  cursor: pointer;
+}
+
 textarea {
   min-height: 4.5rem;
 }

@@ -31,8 +31,46 @@
 
   <main id="main-content" tabindex="-1">
     <section class="panel">
+      <h2>Timeline</h2>
       <p id="position-info"></p>
       <p id="selection-info"></p>
+
+      <!--
+        The single authoritative editing playhead, expressed as a real,
+        native semantic slider — not a styled div pretending to be one.
+        This is deliberately the PRIMARY mechanism for Left/Right/Home/End
+        navigation now (see docs/Pro Roadmap.md, 0.2.5): a native form
+        control's own keydown handling, while it holds focus, is the
+        browser's guaranteed input path — unlike a global bare-key
+        listener, which competes with Windows' own accessibility/focus-
+        traversal layer for arrow keys specifically. step="0.01" matches
+        the finest audible-scrub precision (10ms); the actual Left/Right/
+        Home/End behavior is implemented in JS (10s/30s/beginning/end),
+        overriding the native default per-step increment — see
+        bindPlayheadSliderKeydown() in editorWindow.js.
+      -->
+      <label for="playhead-slider">Playhead</label>
+      <input type="range" id="playhead-slider" min="0" max="0" step="0.01" value="0" />
+
+      <!--
+        The visual timeline: playhead, Marks, and the selected interval,
+        drawn on a canvas whose coordinate space is the same seconds-based
+        authoritative playhead the slider and every keyboard command use
+        — clicking anywhere on it computes a position in that same space
+        and moves the same playhead, not a separate "mouse position."
+        aria-hidden because everything it shows is already available
+        through the semantic elements around it (the slider above, the
+        position/selection text) — the canvas is a visual convenience for
+        sighted and low-vision users, not a second, competing interface.
+      -->
+      <canvas
+        id="timeline-canvas"
+        width="800"
+        height="90"
+        aria-hidden="true"
+        tabindex="-1"
+      ></canvas>
+      <p id="timeline-status" class="sr-only" aria-live="off"></p>
 
       <h2>Navigate and Select</h2>
       <div class="button-row">
@@ -127,7 +165,7 @@
   </main>
 
   <footer class="app-footer">
-    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.2.4.</p>
+    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.2.5.</p>
 
     <details>
       <summary>Keyboard Shortcuts</summary>
