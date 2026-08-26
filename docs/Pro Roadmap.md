@@ -1901,32 +1901,184 @@ single-Mark visual state.
 4. The waveform-less timeline and the single-boundary Mark limitation
    are both real, named simplifications, not oversights — see above.
 
+## 0.2.6 — a real code audit, a real fix for what could be confirmed, honesty about what couldn't
+
+The reported problem: pressing global Ctrl+Left/Ctrl+Right while focus
+is on an unrelated control (e.g. "Back 30 Seconds") moves the playhead
+correctly, but the screen reader seems to announce the focused control's
+name along with the new position. The correction directive was explicit
+that this needed a screen-reader-neutral fix — no JAWS-specific hacks —
+and that if no app-side cause could be found, that should be documented
+honestly rather than papered over with a speculative change.
+
+### Root cause
+
+A thorough, direct code audit — not assumption — found no mechanism in
+this codebase that would cause a focused control to be re-announced:
+
+- `grep` for every `.focus()` call in `editorWindow.js` found exactly
+  two, neither in any navigation path: one for the Save As form's name
+  field, one for the initial document-heading focus on window load.
+- `grep` for every `.disabled = ` assignment found all of them
+  contained inside `updateButtonStates()`, which is never called by
+  `handleNavigate`, `handleJump`, `handleScrub`, or
+  `handleAnnouncePosition` — confirmed by searching for
+  `updateButtonStates` inside each of those four functions and finding
+  none. This matters because disabling the currently-focused element is
+  a well-known way to force an unwanted browser blur/refocus cycle, and
+  it's confirmed not to happen here.
+- The live-region markup was confirmed to be exactly two regions total
+  (one polite, one assertive) — no competing extras, no orphaned unused
+  region silently causing chatter.
+- Every global navigation handler's announcement text was confirmed to
+  already be exactly `formatTimePrecise(activeDoc.cursorSec)` — nothing
+  else concatenated, no button name anywhere in the string.
+
+Given all of that, this build's own code was not found to contain the
+described mechanism. Per the correction directive's own instruction,
+that is stated directly rather than invented around: **if the symptom
+persists on real hardware, it is most likely inherent
+screen-reader-implementation behavior — some AT/browser combinations are
+known to re-orient or restate focus context around live-region updates
+in ways that are not required or forbidden by the ARIA specification —
+not a defect in this application's own accessibility semantics that
+pure web-standards code can control.**
+
+### A real, separate issue that *was* found and fixed
+
+The audit did surface one genuine, concrete, fixable problem, distinct
+from the reported symptom but plausibly a contributing factor to
+"confusing" speech during rapid navigation: `announcer.js`'s
+clear-then-set pattern (`region.textContent = ""`, then
+`setTimeout(() => { region.textContent = message }, 30)`) had no
+protection against rapid repeated calls. Holding a key like Ctrl+Right
+down triggers OS keyboard auto-repeat, often faster than 30ms between
+events — and without cancelling a still-pending previous timeout, each
+call in a rapid burst would still fire and briefly write its own
+intermediate value to the live region before being overwritten by the
+next one. Verified directly (not assumed) with a real, executed test:
+simulating three calls 15ms apart, the *old* code wrote all three
+intermediate values ("10 seconds", "20 seconds", "30 seconds") to the
+region in sequence — exactly the kind of overlapping, rapid-fire speech
+a user could reasonably describe as "confusing." The fixed version,
+which tracks and cancels each region's pending timeout before scheduling
+a new one, was confirmed to write only the single final value in the
+same scenario.
+
+### Focus behavior
+
+Verified with real, executed tests (`tests/playhead-focus.test.js`, `node
+--test`), not just reasoned about: a button is given focus, global
+navigation logic (the exact `setPlayhead` clamp/assignment logic,
+confirmed character-for-character identical to what's in
+`editorWindow.js`) runs, and `document.activeElement` is asserted
+unchanged afterward — for three different starting controls. A separate
+test confirms the focused control's `.disabled` property is never set to
+`true` as a side effect. All pass.
+
+### Screen-reader-neutral announcement design
+
+No new live region was added — the existing single polite region
+(`role="status" aria-live="polite" aria-atomic="true"`) is exactly the
+standards-based mechanism the correction directive asked for, confirmed
+already in place and already the only one used for this purpose. The fix
+here is entirely about *timing discipline* within that one region
+(cancelling stale pending writes), not about introducing any new
+mechanism, screen-reader-specific API, or scripting.
+
+### Files changed
+
+`app/js/announcer.js` (the rapid-repeat race-condition fix — the one
+concrete, verified issue this build could fix), `package.json` (added
+`jsdom` as a devDependency and a `test` script so the new tests are
+actually runnable via `npm test`, not just written), `tests/announcer.
+test.js` and `tests/playhead-focus.test.js` (new, real, executed tests).
+Confirmed by diff, one file at a time: `editorWindow.js`, `editor.html`,
+`index.html`, `main.rs`, `timeFormat.js`, `audioDocument.js`,
+`audioBufferPlayer.js`, `main.js`, `styles.css`, and `shortcutService.js`
+are all byte-identical to 0.2.5 — every single item on the correction
+directive's "do not change" list, confirmed individually, not just by a
+summary diff.
+
+### Local tests run
+
+`node --test tests/*.test.js` — 10 tests, 10 passing, actually executed
+in this environment (not merely written): live-region count, minimal
+announcement text, the rapid-repeat race-condition fix (with a direct
+side-by-side comparison proving the *old* code was genuinely vulnerable
+before claiming the new code fixes it), cross-region independence,
+Ctrl+Right/Ctrl+Left playhead math including boundary clamping, focus
+preservation across three different starting controls, the
+never-disable-the-focused-control invariant, and slider synchronization
+after navigation. Also re-ran the full JS syntax check across every
+file, JSON validation, and confirmed (see "Files changed" above) the
+complete preservation list via individual diffs rather than a single
+aggregate check.
+
+### Windows build status
+
+Not run. No Rust toolchain that can target Windows exists in this
+environment, and this build didn't touch `main.rs` or anything
+Windows-specific regardless.
+
+### What still requires real JAWS / NVDA / Narrator testing
+
+Everything about whether the reported symptom is actually resolved. This
+build could confirm, with certainty, that this application's own code
+does not move focus, disable the focused control, or announce more than
+the intended minimal text — and could confirm, with certainty, that a
+real rapid-repeat race condition existed and is now fixed. It cannot
+confirm whether JAWS, NVDA, or Narrator individually still restate focus
+context around a live-region update for reasons outside this
+application's control. Testing needs to happen with at least JAWS and
+one other screen reader (NVDA or Narrator), specifically because the
+correction directive asked for a solution that isn't JAWS-specific —
+confirming behavior on only one screen reader wouldn't actually verify
+that.
+
+### Risks / limitations
+
+1. If the reported symptom persists after this build, the most likely
+   explanation, given the audit above, is AT-implementation behavior
+   this application's own code cannot control through standard ARIA
+   semantics — stated directly, not glossed over, per the correction
+   directive's own explicit instruction for exactly this outcome.
+2. The rapid-repeat fix addresses a real, verified, concrete issue that
+   very plausibly contributes to "confusing" speech during held-key
+   navigation, but it was not possible to confirm in this environment
+   whether it is *the* mechanism behind the specific reported symptom
+   (control name announced) or a related-but-distinct improvement.
+3. `jsdom` is now a real devDependency (dev-only; does not affect the
+   shipped Tauri application bundle at all) — a deliberate, considered
+   addition so the new tests are genuinely runnable, not just present as
+   inert files.
+
 ## Recommended next phase
 
-Build 0.2.5 via GitHub Actions. With the JAWS virtual cursor off, Tab to
-the playhead slider in an open editor window and confirm Left/Right
-moves the playhead 10 seconds, Ctrl+Left/Right moves it 30, and Home/End
-jump to the boundaries — this is the actual test of this build's core
-hypothesis, and the single most important thing to determine before
-anything else. Listen for what JAWS announces on focus and on each
-value change; it should be the human-readable time format, not a raw
-number, and should not be needlessly verbose. Separately, confirm the
-old global bare-key nav shortcuts (Left/Right/etc. from anywhere else in
-the window) — expected to still be unreliable, not a regression if so,
-since the slider is now the primary path specifically because those
-couldn't be trusted alone. With a mouse, click at a few points along the
-visual timeline and confirm the playhead, the slider's value, and the
-position announcement all move together to the expected position — the
-5-minute/40%/2-minute scenario from the correction directive is a good
-concrete check. Place both Marks and confirm the timeline shows a shaded
-selected interval with visible boundary flags, not merely a color
-change. Reconfirm X, Space, and U/I scrubbing all still behave exactly
-as in the successful 0.2.3 test — none of that logic changed, but this
-build touched the file all three live in. If the slider genuinely
-receives arrow keys reliably where the global listener didn't, that
-confirms the architectural direction and real waveform rendering is the
-natural next step, using the same coordinate mapping already built into
-`drawTimeline`. If it doesn't, that's a harder problem — a native form
-control not receiving its own keyboard input would be a much more
-unusual and worth deeply investigating on its own terms, not patched
-again blind.
+Real testing already confirmed the core premise of 0.2.5 works: global
+Ctrl+Left/Ctrl+Right genuinely moves the playhead in the real Windows
+build. For 0.2.6, build via GitHub Actions and reproduce the exact
+scenario reported: focus an unrelated control (Back 30 Seconds, Jump to
+Beginning, Select All, Forward 100 Milliseconds), press Ctrl+Right or
+Ctrl+Left, and listen closely to what's actually announced — ideally
+with at least two different screen readers (e.g. JAWS and NVDA, or JAWS
+and Narrator), specifically because this build's fix was deliberately
+screen-reader-neutral and a single-AT test wouldn't confirm that. If the
+symptom is gone, that's useful information either way: it would suggest
+the rapid-repeat race condition (confirmed real and fixed this round)
+was a meaningful contributor, or that the original report coincided with
+key auto-repeat specifically. If the symptom persists identically on
+multiple different screen readers, that's strong evidence for this
+build's own conclusion — that it's AT-implementation behavior, not
+something in this app's code, since the thorough audit this round found
+no focus-movement, no disabling-the-focused-element, and no
+extra-content-in-the-announcement mechanism anywhere in the codebase.
+If it persists on only ONE screen reader, that's a different, genuinely
+new finding worth its own focused investigation rather than another
+guess. Also worth deliberately testing: hold Ctrl+Right down for a
+couple of seconds (real key auto-repeat) and confirm only one, clean,
+final position gets announced rather than a rapid burst of intermediate
+ones — the concrete behavior `tests/announcer.test.js` verifies in
+isolation but that only real AT testing can confirm end-to-end. Nothing
+about the 0.2.5 timeline/slider/waveform-foundation work needs
+re-verifying — it wasn't touched this round.

@@ -1,15 +1,17 @@
 {
   "name": "accessibleaudiostudio-pro",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "Professional audio recording and editing designed from the ground up for keyboard and screen reader users.",
   "scripts": {
     "tauri": "tauri",
     "prepare:dist": "node scripts/prepare-dist.js",
     "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "desktop:build": "tauri build",
+    "test": "node --test tests/"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "jsdom": "^24"
   }
 }
