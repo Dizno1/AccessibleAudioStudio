@@ -299,10 +299,33 @@ function handleKeydown(event) {
   });
 }
 
-/** Attach the single global keydown listener. Safe to call once at startup. */
+/**
+ * Attach the single global keydown listener. Safe to call once at startup.
+ *
+ * Registered on the CAPTURE phase, not the default bubble phase — added
+ * specifically because real Windows/JAWS testing (0.2.3) found bare
+ * Left/Right Arrow silently not moving the playhead with the JAWS
+ * virtual cursor off, while every other bare-key shortcut (Space, X,
+ * U/I scrubbing) worked correctly in the same test. Direct simulation
+ * of matchesCombo()/SHORTCUTS against real ArrowLeft/ArrowRight events
+ * (see docs/Pro Roadmap.md, 0.2.4) proved the matching logic itself is
+ * correct, and this page has no ARIA toolbar/tablist-style role and no
+ * scrollable/overflow container that would explain native arrow-key
+ * interception either — ruling those out left the event itself as the
+ * remaining explanation: some native default handling for arrow keys
+ * specifically (a well-documented category of behavior in embedded
+ * WebView controls) most likely consumes/redirects the keydown before a
+ * bubble-phase `window` listener ever runs. Listening on the capture
+ * phase runs this handler, and its `preventDefault()` call, as early in
+ * the event's lifecycle as JavaScript can — before any other handler,
+ * native or otherwise, gets a chance to intercept it — which is the
+ * standard, minimal fix for exactly this class of issue. This changes
+ * nothing about which keys map to which actions, or what any handler
+ * does; only when this one listener runs.
+ */
 export function initShortcutService() {
   if (listenerAttached) return;
-  window.addEventListener("keydown", handleKeydown);
+  window.addEventListener("keydown", handleKeydown, true);
   listenerAttached = true;
 }
 

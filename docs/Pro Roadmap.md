@@ -1620,26 +1620,93 @@ run JAWS, so this is stated as a real, unresolved risk, not glossed
 over — see the Final Report for this build for the complete verification
 breakdown.
 
+## 0.2.4 — Left/Right Arrow, and only Left/Right Arrow, weren't reaching the app
+
+Real Windows/JAWS testing of 0.2.3, virtual cursor off, reported X, Space,
+U/I scrubbing at all three precision levels, multi-file opening, and the
+new time-format announcements ("Landed at 1 minute 5.091 seconds.") all
+working correctly — and Left/Right Arrow specifically doing nothing at
+all. Every other new bare-key shortcut worked; only the arrow keys for
+coarse navigation didn't.
+
+### Investigation, and what was ruled out with evidence rather than by eye
+
+Per the correction directive's own numbered requirements:
+
+1. **Are the arrow shortcuts actually registered?** Yes — confirmed by
+   printing `SHORTCUTS` and finding both `navBack10`/`navForward10`
+   entries present with the expected `{ key: "arrowleft" }`/
+   `{ key: "arrowright" }` combos.
+2. **Does the editor window receive the keydown events at all?** This is
+   the one question that genuinely cannot be answered without running on
+   real Windows — see below.
+3. **Is the dispatcher dropping ArrowLeft/ArrowRight specifically?**
+   Directly disproven, not just read by eye: `matchesCombo()` and
+   `SHORTCUTS.find()` were run against ten realistic simulated
+   `KeyboardEvent`-shaped objects — `ArrowLeft`, `ArrowRight`,
+   `Ctrl+ArrowLeft`, `Ctrl+ArrowRight`, `Home`, `End`, `u`, `i`, `Space`,
+   `x` — and every single one resolved to the correct action. The
+   matching logic is provably correct.
+
+Two other common causes of "arrow keys specifically get eaten in an
+embedded browser" were checked directly and ruled out: no `role="toolbar"`/
+`"tablist"`/similar ARIA role exists anywhere in `editor.html` (which
+would make Chromium treat arrow keys as native widget-navigation rather
+than an ordinary keydown), and `.button-row` has no `overflow`/scroll CSS
+that could make arrow keys trigger native container scrolling instead of
+reaching this app's listener.
+
+### Fix
+
+With the dispatcher logic proven correct and both common DOM-level
+explanations ruled out, the remaining explanation is the event itself:
+something native — most plausibly a WebView2-level default behavior
+specific to arrow keys, a well-documented category of issue in embedded
+Windows browser controls — most likely consumes or redirects the keydown
+before this app's `window`-level listener, registered on the ordinary
+bubble phase, ever runs.
+
+`initShortcutService` now registers `handleKeydown` on the **capture**
+phase instead: `window.addEventListener("keydown", handleKeydown, true)`.
+This is the standard, minimal fix for exactly this class of problem —
+it runs this app's handler, and its `preventDefault()` call, as early in
+the event's lifecycle as JavaScript can, before any other handler has a
+chance to intercept or redirect it. Confirmed this is the *only* keydown
+listener anywhere in the codebase, so there's no risk of this change
+interacting with some other listener. Nothing about which keys map to
+which actions, what any handler does, or existing announcements changed
+— verified by re-running the same ten-case simulation after the change:
+all ten still resolve correctly, identical to before.
+
+### What this fix does and does not claim
+
+This is a strong, well-reasoned hypothesis given the evidence — not a
+confirmed root cause. This environment cannot run WebView2 or real
+Windows, so the exact native mechanism being preempted was never
+directly observed, only inferred from having ruled out every other
+explanation this environment *can* check. If Left/Right Arrow still
+don't work after this build, that's genuinely new information (the
+capture-phase theory would be wrong), not a sign the investigation was
+skipped.
+
 ## Recommended next phase
 
-Build 0.2.3 via GitHub Actions and, with real JAWS running and the
-virtual cursor on (per the roadmap's own Stage 1 exit criterion), test
-every new shortcut in an editor window: Left/Right, Ctrl+Left/Right,
-Home, End, U, I, Shift+U/I, Ctrl+Shift+U/I, Space, X, `[`, `]`. The
-single most important thing to determine is whether these bare,
-unmodified keys actually reach this app's own keydown handler at all
-while the virtual cursor is active, or whether JAWS intercepts some or
-all of them for its own quick-navigation first — X colliding with
-JAWS's own checkbox-navigation letter is the specific, named risk. If
-any of them don't reach the app, that's the concrete next problem to
-solve (a different keybinding, or a documented "use forms mode/virtual
-cursor off for these" instruction), not a reason to abandon the
-underlying SPACE/X or scrubbing design. Separately, confirm scrubbing
-genuinely produces audible sound at each step (this could not be run in
-this environment — jsdom has no real Web Audio implementation) and that
-SPACE truly never moves the playhead across several audition cycles
-while X reliably lands it. Also reconfirm the full 0.2.2 acceptance
-surface — window creation, titles, Alt+Tab, cross-window clipboard, the
-Explorer-copy-paste workflow — since none of that was touched this
-round and shouldn't need re-verifying, only reconfirming nothing
-regressed.
+Build 0.2.4 via GitHub Actions and, with the JAWS virtual cursor off (the
+exact configuration where Left/Right previously failed), confirm they
+now move the playhead 10 seconds each way, and that Ctrl+Left/Right,
+Home, and End still work as they reportedly already did. If arrows now
+work, this specific defect is closed — but this environment could only
+reason about *why* they might have failed, not confirm the capture-phase
+fix actually resolves it, so this needs a real pass before calling it
+done. If arrows still don't move the playhead, that disproves the
+capture-phase hypothesis specifically, and the next step would be
+determining whether the event reaches the page at all (e.g., a
+`console.log` at the very top of `handleKeydown` visible via devtools)
+rather than trying another blind theory. Everything confirmed working in
+the 0.2.3 test (X, Space, U/I scrubbing at all precision levels,
+multi-file opening, time-format announcements) should be reconfirmed
+unaffected, though nothing in this build touched any of that code.
+Separately — carried over from 0.2.3, still open — confirm scrubbing
+genuinely produces audible sound (unverifiable in this environment) and
+run the full Stage 1 shortcut set with the virtual cursor *on*, per the
+roadmap's own Stage 1 exit criterion, not just off.
