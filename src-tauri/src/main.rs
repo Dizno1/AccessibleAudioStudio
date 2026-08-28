@@ -672,15 +672,47 @@ fn pick_files_native(app: &tauri::AppHandle) -> Result<(Vec<PathBuf>, PasteDiagn
         CommDlgExtendedError, GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_ENABLEHOOK,
         OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
+    // Required for `.window_handle()` below — see the doc comment at that
+    // call site for why this replaced the previous `.hwnd()` call.
+    use raw_window_handle::HasWindowHandle;
 
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    // 0.2.7 build #27 (real Windows CI) failed here with:
+    //   error[E0599]: no method named `hwnd` found for struct `tauri::webview::WebviewWindow`
+    // Root cause investigation (see docs/Pro Roadmap.md, 0.2.7.1, for the
+    // full account): this exact line was unchanged since 0.1.10, where it
+    // compiled successfully on real Windows CI, and nothing in 0.2.7's own
+    // changes touches this function or its imports. Cargo.toml pins
+    // `tauri = { version = "2", ... }` — a bare major-version spec — and
+    // no `Cargo.lock` has ever been committed to this repository
+    // (confirmed absent, not merely gitignored), meaning every CI run
+    // re-resolves dependencies fresh against whatever is currently
+    // published. wry's own 0.36.0 release notes state directly: "the
+    // `HasWindowHandle` trait is required for window types instead of
+    // `HasRawWindowHandle`" — a real, documented breaking change in the
+    // window-handle-access API this exact call depends on. A newer
+    // Tauri/wry patch pulled in between whenever this last compiled and
+    // build #27 is the well-evidenced explanation, not a defect
+    // introduced by 0.2.7's own code changes (which never touch this
+    // function). Rewritten here using the `raw_window_handle` crate's own
+    // stable, version-resilient `HasWindowHandle`/`RawWindowHandle::Win32`
+    // pattern directly, rather than relying on whichever convenience
+    // wrapper method Tauri's own `Window`/`WebviewWindow` types currently
+    // expose — that public API is exactly what changed. NOT verified by
+    // an actual successful compile in this environment; see the 0.2.7.1
+    // roadmap entry for exactly what to check first if this still fails.
     let owner_hwnd: HWND = app
         .get_webview_window("main")
-        .and_then(|w| w.hwnd().ok())
-        .map(|h| HWND(h.0))
+        .and_then(|w| w.window_handle().ok())
+        .and_then(|handle| match handle.as_raw() {
+            raw_window_handle::RawWindowHandle::Win32(h) => {
+                Some(HWND(h.hwnd.get() as *mut std::ffi::c_void))
+            }
+            _ => None,
+        })
         .unwrap_or_default();
 
     PASTE_DIAGNOSTICS.with(|d| *d.borrow_mut() = PasteDiagnostics::default());

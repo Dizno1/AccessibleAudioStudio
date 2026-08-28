@@ -2287,29 +2287,110 @@ waveform, Monitor, level matching, major new DSP).
    is real and complete; substantial polish (dynamic state, contextual
    help, README, tests, Recording Studio parity) remains.
 
+## 0.2.7.1 — build #27's actual compiler error, and why Copilot's diagnosis didn't hold up
+
+Real Windows CI (build #27) gave the first genuine compiler error in the
+0.2.7 line:
+
+```
+error[E0599]: no method named `hwnd` found for struct `tauri::webview::WebviewWindow`
+```
+
+at the exact line in `pick_files_native` (main.rs) that obtains the main
+window's HWND for `GetOpenFileNameW`'s `hwndOwner` — unchanged, character
+for character, since 0.1.10, where it compiled successfully on real
+Windows CI.
+
+### Root cause
+
+Copilot's suggested diagnosis — that `tauri::Manager` wasn't imported at
+module scope — was correctly rejected before any change was made. It
+doesn't hold up mechanically: a `use` statement inside a function body is
+in scope for the rest of that function regardless of exactly where within
+it the statement appears; there's no "before the import takes effect"
+window in Rust the way that explanation implied. `use tauri::Manager;`
+was already present as a function-local import in `pick_files_native`,
+unchanged since it was first added — moving it around could not have
+been the fix.
+
+The actual, well-evidenced explanation: `Cargo.toml` pins
+`tauri = { version = "2", features = [] }` — a bare major-version spec —
+and **no `Cargo.lock` has ever been committed to this repository**
+(confirmed by direct search — absent entirely, not merely gitignored).
+Every CI run therefore re-resolves the full dependency tree fresh
+against whatever is currently published, rather than reusing a known,
+previously-verified set of versions. `wry`'s own 0.36.0 release notes
+state directly: "the `HasWindowHandle` trait is required for window
+types instead of `HasRawWindowHandle`" — a real, documented breaking
+change in exactly the window-handle-access API this call depends on. A
+newer Tauri/wry patch pulled in between whenever this line last compiled
+and build #27 is the well-evidenced explanation — not a defect
+introduced by any of 0.2.7's own code changes, none of which touch this
+function, its imports, or `Cargo.toml` at all (confirmed by diff against
+0.2.6 before this repair began).
+
+Attempting to actually run `cargo check` in this environment produced
+one more piece of corroborating (if indirect) evidence: this sandbox's
+toolchain (`cargo`/`rustc` 1.75.0, from late 2023) is too old to even
+resolve the current dependency tree at all — it fails on a transitive
+dependency requiring the `edition2024` Cargo feature. This doesn't
+prove the exact root cause, but it does concretely show the current
+dependency tree for `tauri = "2"` has moved to require quite recent
+tooling, consistent with meaningful drift having occurred.
+
+### Fix
+
+Rewrote the HWND-obtaining call using the `raw-window-handle` crate's
+own stable, version-resilient `HasWindowHandle` trait and
+`RawWindowHandle::Win32` pattern directly, rather than continuing to
+rely on whichever convenience wrapper method Tauri's own
+`Window`/`WebviewWindow` types currently expose — that public API
+surface is exactly what appears to have changed. `raw-window-handle`
+was added as an explicit, Windows-scoped Cargo dependency, pinned to
+`0.6` — matching the version `wry` 0.36.0+ itself depends on for the
+same trait, per that release's own changelog, so it's expected to be
+compatible with whatever current `tauri`/`wry` version actually gets
+resolved. The `Win32WindowHandle` struct's field (`hwnd: NonZeroIsize`)
+was confirmed directly from `raw-window-handle`'s own published source
+before use, not assumed.
+
+### What this fix does and does not claim
+
+The `raw-window-handle` trait/struct usage itself is confirmed correct
+against that crate's own documented source. What is **not** confirmed:
+whether `tauri::WebviewWindow` (or the `Window` type it wraps)
+implements `HasWindowHandle` — this is used with real, but not
+complete, confidence, based on the strong likelihood that Tauri's own
+internal window/webview embedding must already depend on this exact
+trait somewhere in its own implementation. This fix could not be
+verified by an actual successful compile in this environment. **If
+build #28 fails at this same call site with a different error** (e.g.
+`WebviewWindow` doesn't implement `HasWindowHandle`), that would mean
+this specific hypothesis was wrong, and the next thing to try is
+checking whichever exact Tauri/wry version the failed CI run actually
+resolved (visible in the build log's dependency-download output) against
+that version's own documented `Window`/`WebviewWindow` API — which
+would settle this definitively in a way no amount of further offline
+research can.
+
 ## Recommended next phase
 
-Build 0.2.7 via GitHub Actions — this is the first real compile of the
-entire native menu system, so before anything else, confirm it actually
-builds. If it doesn't, the specific `tauri::menu` API calls used
-(`try_state`, `set_focus`, the `on_menu_event` closure signature) are
-the least-confirmed pieces and the first place to look. If it does
-build: open an editor window, confirm all seven menus appear with
-correct items, and test each one's accelerator where shown. Then the
-actual point of this whole architectural pivot — Tab to the playhead
-slider, confirm Left/Right/Ctrl+Left/Ctrl+Right/Home/End move the
-playhead reliably, and confirm those same keys do nothing (correctly)
-when focus is anywhere else. Test "Make This Editor Primary" in one
-editor window, then "Go to Primary Editor" from a second window and from
-the Recording Studio, confirming window focus actually moves both times.
-Test with JAWS, and ideally NVDA or Narrator too, listening for how the
-menu itself is announced and whether accelerators read correctly. Given
-how much of this build is genuinely new, unverified surface, expect this
-round to surface real, specific problems rather than a clean pass — that
-would be the normal, expected outcome for a build this size, not a
-sign anything was rushed. After the menu/slider/Primary-Editor
-foundation is confirmed stable: the substantial remaining scope from
-this same correction directive (README rewrite, the new tests it asked
-for, Layer 3 contextual shortcut help, Recording Studio parity, dynamic
-menu-item state) is the natural next increment, not a new architectural
-question.
+Build #28 via GitHub Actions is the direct next step — this repair has
+not been compiler-verified, so confirming it actually resolves the
+`hwnd()` error is the first thing to check, before anything else about
+0.2.7's broader feature set. If it fails at the same call site with a
+new error (most likely something about `HasWindowHandle` not being
+implemented for `WebviewWindow`), check the build log's dependency
+resolution output for the exact `tauri`/`wry` versions actually pulled,
+and look up that specific version's documented window-handle API — that
+would settle the remaining uncertainty definitively. If it compiles:
+resume exactly where 0.2.7's own "Recommended next phase" left off —
+confirm the native menu system, playhead-slider-only arrow navigation,
+and Primary Editor foundation all work as intended on real Windows/JAWS,
+none of which has ever been exercised by any compiler until this build
+actually succeeds. Separately worth doing at some point soon, though
+outside this narrow repair's own scope: committing a `Cargo.lock` file
+once a build succeeds, so future CI runs reuse the exact dependency
+versions confirmed working instead of re-resolving fresh each time —
+the direct fix for the underlying class of problem this whole repair
+was about, not just this one symptom of it.

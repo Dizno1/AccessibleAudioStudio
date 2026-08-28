@@ -73,6 +73,16 @@ features = [
   "Win32_System_Ole",
 ]
 
+# Added in 0.2.7.1: used only in pick_files_native (src/main.rs) to obtain
+# the main window's real HWND for GetOpenFileNameW's hwndOwner parameter —
+# see the doc comment at that call site for why this replaced Tauri's own
+# WebviewWindow::hwnd() convenience method, which build #27 (real Windows
+# CI) found no longer resolved. Pinned to 0.6 to match the version wry
+# 0.36.0+ itself depends on for the same HasWindowHandle trait, per that
+# release's own changelog.
+[target.'cfg(windows)'.dependencies.raw-window-handle]
+version = "0.6"
+
 [[bin]]
 name = "accessibleaudiostudio-pro"
 path = "src/main.rs"
