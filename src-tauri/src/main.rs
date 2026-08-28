@@ -895,13 +895,22 @@ fn open_editor_window_for_path(
         .unwrap_or_else(|| path.to_string_lossy().to_string());
     let title = format!("{} - AccessibleAudioStudio Pro", name);
 
-    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("editor.html".into()))
+    let window = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("editor.html".into()))
         .title(title)
         .inner_size(900.0, 750.0)
         .min_inner_size(640.0, 480.0)
         .build()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(menu) = build_editor_menu(app) {
+        let _ = window.set_menu(menu);
+    }
+    let window_clone = window.clone();
+    window.on_menu_event(move |_window, event| {
+        handle_menu_event(&window_clone, &event);
+    });
+
+    Ok(())
 }
 
 /// Shows the native Open Audio dialog (via `pick_files_native`, entirely
@@ -978,13 +987,22 @@ async fn open_new_editor_window(
 
     let title = format!("Untitled Audio {} - AccessibleAudioStudio Pro", display_number);
 
-    tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App("editor.html".into()))
+    let window = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::App("editor.html".into()))
         .title(title)
         .inner_size(900.0, 750.0)
         .min_inner_size(640.0, 480.0)
         .build()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(menu) = build_editor_menu(&app) {
+        let _ = window.set_menu(menu);
+    }
+    let window_clone = window.clone();
+    window.on_menu_event(move |_window, event| {
+        handle_menu_event(&window_clone, &event);
+    });
+
+    Ok(())
 }
 
 /// Called by an editor window itself, once it has loaded, using its own
@@ -1079,6 +1097,185 @@ async fn get_shared_audio_clipboard(
     Ok(guard.clone())
 }
 
+/// ---------------------------------------------------------------------
+/// 0.2.7: native application menu
+/// ---------------------------------------------------------------------
+///
+/// See docs/Pro Roadmap.md, 0.2.7, "Menu architecture decision" for the
+/// investigation and reasoning behind choosing a real native Tauri/
+/// Windows menu over an HTML/ARIA `role="menubar"` web menu. In short:
+/// a native Windows menu is exactly the same menu system JAWS, NVDA, and
+/// Narrator have supported as their baseline case for decades (via
+/// Windows' own accessibility APIs), whereas a hand-built ARIA menu
+/// widget is one of the most bug-prone, cross-screen-reader-inconsistent
+/// patterns to implement correctly — this app already has enough
+/// evidence, from the Open Audio saga alone, of how much can go wrong
+/// hand-implementing something the platform already provides natively.
+///
+/// Every menu item's `id` is deliberately the SAME action-name string
+/// already used by `shortcutService.js`'s `registerAction`/keyboard
+/// dispatch (`"cutSelection"`, `"saveAudio"`, `"auditionPlayback"`,
+/// etc.) — clicking a menu item emits a `"menu-action"` event to that
+/// specific window, and the window's own JS calls the SAME
+/// `triggerAction(id)` function the keyboard shortcut path already used
+/// internally. This is the concrete implementation of "one underlying
+/// command implementation shared with shortcuts and other controls" —
+/// the menu never has its own, second copy of any command's logic.
+/// "Go to Recording Studio" and "Go to Primary Editor" are the two
+/// exceptions: focusing a *different* window is something only Rust can
+/// do, so those two are handled directly in the menu-event handler
+/// rather than emitted to JS at all.
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::Emitter;
+
+/// Which editor window (if any) currently holds the Primary Editor role
+/// — a role assigned to an ordinary document window, not a separate
+/// document type. At most one editor is Primary at once; making a
+/// different editor Primary simply overwrites this. Ordinary focus
+/// changes and Alt+Tab never touch this — only the explicit "Make This
+/// Editor Primary" command does.
+#[derive(Default)]
+struct PrimaryEditorState(Mutex<Option<String>>);
+
+fn build_recording_studio_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let file = SubmenuBuilder::new(app, "File")
+        .item(&MenuItemBuilder::new("New Audio").id("newAudio").accelerator("Ctrl+N").build(app)?)
+        .item(&MenuItemBuilder::new("Open Audio…").id("openAudio").accelerator("Ctrl+O").build(app)?)
+        .build()?;
+
+    let navigate = SubmenuBuilder::new(app, "Navigate")
+        .item(&MenuItemBuilder::new("Go to Primary Editor").id("goToPrimaryEditor").build(app)?)
+        .build()?;
+
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id("showKeyboardShortcuts").build(app)?)
+        .item(&MenuItemBuilder::new("Open Audio Diagnostics").id("showOpenAudioDiagnostics").build(app)?)
+        .build()?;
+
+    MenuBuilder::new(app).items(&[&file, &navigate, &help]).build()
+}
+
+fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let file = SubmenuBuilder::new(app, "File")
+        .item(&MenuItemBuilder::new("Save").id("saveAudio").accelerator("Ctrl+S").build(app)?)
+        .item(&MenuItemBuilder::new("Save As…").id("saveAudioAs").accelerator("Ctrl+Shift+S").build(app)?)
+        .build()?;
+
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .item(&MenuItemBuilder::new("Undo").id("undoEdit").accelerator("Ctrl+Z").build(app)?)
+        .item(&MenuItemBuilder::new("Redo").id("redoEdit").accelerator("Ctrl+Y").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::new("Cut").id("cutSelection").accelerator("Ctrl+X").build(app)?)
+        .item(&MenuItemBuilder::new("Copy").id("copySelection").accelerator("Ctrl+C").build(app)?)
+        .item(&MenuItemBuilder::new("Paste").id("pasteSelection").accelerator("Ctrl+V").build(app)?)
+        .item(&MenuItemBuilder::new("Delete Selection").id("deleteSelection").build(app)?)
+        .build()?;
+
+    // Deliberately minimal for now — see the correction directive:
+    // "Establish View as a permanent architectural location even if it
+    // initially contains few commands... Do not implement major future
+    // View features in this build merely to populate the menu." Its one
+    // real command today (Keyboard Shortcuts) is also reachable from
+    // Help, since it's genuinely both a presentation setting's home and
+    // a discoverability aid; nothing fake was added just to fill space.
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id("showKeyboardShortcuts").build(app)?)
+        .build()?;
+
+    let selection = SubmenuBuilder::new(app, "Selection")
+        .item(&MenuItemBuilder::new("Set First Mark").id("setMarkStart").accelerator("[").build(app)?)
+        .item(&MenuItemBuilder::new("Set Second Mark").id("setMarkEnd").accelerator("]").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::new("Select All").id("selectAll").build(app)?)
+        .item(&MenuItemBuilder::new("Clear Selection").id("clearSelection").build(app)?)
+        .item(&MenuItemBuilder::new("Announce Selection").id("announceSelection").build(app)?)
+        .item(&MenuItemBuilder::new("Trim to Selection").id("trimToSelection").build(app)?)
+        .build()?;
+
+    let playback = SubmenuBuilder::new(app, "Playback")
+        .item(&MenuItemBuilder::new("Audition").id("auditionPlayback").accelerator("Space").build(app)?)
+        .item(&MenuItemBuilder::new("Play and Land").id("locateAndLand").accelerator("X").build(app)?)
+        .item(&MenuItemBuilder::new("Preview Selection").id("previewSelection").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::new("Scrub Back 1 Second").id("scrubBack1").accelerator("U").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 1 Second").id("scrubForward1").accelerator("I").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 100 Milliseconds").id("scrubBack100ms").accelerator("Shift+U").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 100 Milliseconds").id("scrubForward100ms").accelerator("Shift+I").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 10 Milliseconds").id("scrubBack10ms").accelerator("Ctrl+Shift+U").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 10 Milliseconds").id("scrubForward10ms").accelerator("Ctrl+Shift+I").build(app)?)
+        .build()?;
+
+    let navigate = SubmenuBuilder::new(app, "Navigate")
+        .item(&MenuItemBuilder::new("Go to Recording Studio").id("goToRecordingStudio").build(app)?)
+        .item(&MenuItemBuilder::new("Make This Editor Primary").id("makePrimaryEditor").build(app)?)
+        .item(&MenuItemBuilder::new("Go to Primary Editor").id("goToPrimaryEditor").build(app)?)
+        .separator()
+        // Deliberately no keyboard accelerator on these two — a menu
+        // accelerator is a global keybinding exactly like the one that
+        // caused the 0.2.3–0.2.6 arrow-key saga (see docs/Pro Roadmap.md,
+        // 0.2.7). Home/End's real keyboard path is the playhead slider,
+        // per the correction directive; these remain reachable by mouse/
+        // menu navigation only.
+        .item(&MenuItemBuilder::new("Jump to Beginning").id("jumpBeginning").build(app)?)
+        .item(&MenuItemBuilder::new("Jump to End").id("jumpEnd").build(app)?)
+        .item(&MenuItemBuilder::new("Announce Current Position").id("announcePosition").build(app)?)
+        .build()?;
+
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id("showKeyboardShortcuts").build(app)?)
+        .item(&MenuItemBuilder::new("Keyboard Shortcut Diagnostics").id("showShortcutDiagnostics").build(app)?)
+        .build()?;
+
+    MenuBuilder::new(app)
+        .items(&[&file, &edit, &view, &selection, &playback, &navigate, &help])
+        .build()
+}
+
+/// One shared handler for both window types' menus. Two commands —
+/// switching which *window* has focus — are genuinely Rust-only
+/// operations and are handled directly here; every other item is simply
+/// forwarded to the clicking window's own JavaScript, which already
+/// knows how to run that action via the same dispatch path a keyboard
+/// shortcut uses.
+fn handle_menu_event(window: &tauri::WebviewWindow, event: &tauri::menu::MenuEvent) {
+    let id = event.id().0.as_str();
+    let app = window.app_handle();
+
+    match id {
+        "goToRecordingStudio" => {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_focus();
+            }
+        }
+        "makePrimaryEditor" => {
+            if let Some(state) = app.try_state::<PrimaryEditorState>() {
+                if let Ok(mut guard) = state.0.lock() {
+                    *guard = Some(window.label().to_string());
+                }
+            }
+            let _ = window.emit("primary-editor-changed", window.label());
+        }
+        "goToPrimaryEditor" => {
+            let target_label = app
+                .try_state::<PrimaryEditorState>()
+                .and_then(|state| state.0.lock().ok().and_then(|g| g.clone()));
+            if let Some(label) = target_label {
+                if let Some(target_window) = app.get_webview_window(&label) {
+                    let _ = target_window.set_focus();
+                    return;
+                }
+            }
+            // No Primary Editor set, or its window no longer exists —
+            // tell whichever window the user actually clicked from,
+            // rather than doing nothing with no feedback at all.
+            let _ = window.emit("menu-action-unavailable", "goToPrimaryEditor");
+        }
+        _ => {
+            let _ = window.emit("menu-action", id);
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         // Restores window size and position from the previous session on
@@ -1092,6 +1289,20 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingEditorSources(Mutex::new(HashMap::new())))
         .manage(SharedAudioClipboard::default())
+        .manage(PrimaryEditorState::default())
+        .setup(|app| {
+            let handle = app.handle();
+            if let Some(main_window) = app.get_webview_window("main") {
+                if let Ok(menu) = build_recording_studio_menu(handle) {
+                    let _ = main_window.set_menu(menu);
+                }
+                let main_window_clone = main_window.clone();
+                main_window.on_menu_event(move |_window, event| {
+                    handle_menu_event(&main_window_clone, &event);
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_audio_windows,
             open_new_editor_window,

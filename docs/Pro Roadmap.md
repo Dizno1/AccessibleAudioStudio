@@ -2053,32 +2053,263 @@ that.
    addition so the new tests are genuinely runnable, not just present as
    inert files.
 
+## 0.2.7 — architecture: a native menu, and the arrow-key issue closed by design
+
+The largest single request in this project's history — a real architectural
+build, not a patch. What follows is a genuinely partial delivery of an
+enormous scope, reported honestly rather than dressed up as complete.
+
+### Investigation
+
+Researched Tauri v2's native menu API directly before writing any code:
+confirmed `tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder}`,
+per-window menus via `WebviewWindow::set_menu()`/`WebviewWindowBuilder::menu()`,
+per-window `on_menu_event`, and confirmed the `menu` module needs no
+special Cargo feature flag (it's part of the core `tauri` crate, always
+available).
+
+### Menu architecture decision: native Tauri/Windows menu
+
+Evaluated against every criterion the correction directive named
+(keyboard operation, standard Windows behavior, mouse operation,
+accelerators, accessibility API exposure, JAWS/NVDA/Narrator behavior,
+per-document/multi-window state, one shared command implementation,
+maintenance) and chose the **native menu**, not an HTML/ARIA
+`role="menubar"` web menu.
+
+### Why this is the most robust approach
+
+A native Windows menu is the exact same menu system JAWS, NVDA, and
+Narrator have supported as their baseline case for decades, through
+Windows' own accessibility APIs — every native Windows application uses
+it. A hand-built ARIA menu, by contrast, is one of the most bug-prone,
+cross-screen-reader-inconsistent widget patterns to implement correctly
+(full arrow-key/Home/End/Escape/type-ahead navigation, exact focus and
+announcement conventions) — and this project already has direct, painful
+evidence, from the entire Open Audio saga, of how much can go wrong
+hand-implementing something the platform already provides natively.
+Given this app is Windows-desktop-only in Tauri/WebView2, the native
+option was available and free; there was no compelling reason to accept
+the higher risk of a hand-built alternative.
+
+### Implemented
+
+- Full native menu construction for both window types — File/Edit/View/
+  Selection/Playback/Navigate/Help for editor windows; a simpler
+  File/Navigate/Help for the Recording Studio.
+- `triggerAction()`, new in `shortcutService.js` — the one shared
+  dispatch point a menu click and its equivalent keyboard shortcut both
+  call into. A menu item's Rust-side `id` is deliberately the same
+  action-name string `registerShortcutActions()` already used for the
+  keyboard path (`"cutSelection"`, `"saveAudio"`, etc.) — there is one
+  implementation of each command, not two.
+- Seven previously keyboard-only or unregistered actions
+  (`deleteSelection`, `selectAll`, `clearSelection`, `announceSelection`,
+  `trimToSelection`, `previewSelection`, `announcePosition`) registered
+  as actions for the first time, so the menu can reach them.
+- Primary Editor role: real Rust-side state (`PrimaryEditorState`, a
+  `Mutex<Option<String>>` window label), "Make This Editor Primary,"
+  "Go to Primary Editor," and "Go to Recording Studio" — window-focus
+  operations, handled directly in Rust since only Rust can focus a
+  *different* window. The core mechanism works; dynamic menu-label/
+  enabled-state reflecting current Primary status does not — see
+  "Deferred by design."
+- The arrow-key architecture fix: the six global `Left`/`Right`/
+  `Ctrl+Left`/`Ctrl+Right`/`Home`/`End` entries added in Stage 1 (0.2.5)
+  are removed entirely from `shortcutService.js`'s `SHORTCUTS` array —
+  confirmed by count (28 → 22 shortcuts, zero duplicates, verified
+  programmatically). The slider's own scoped `keydown` handling
+  (`bindPlayheadSlider`, from 0.2.5) was never part of that array to
+  begin with, so it's completely untouched — Left/Right/Home/End now
+  only ever move the playhead while the slider itself has focus.
+- **A real bug caught and fixed mid-build, worth stating plainly:** the
+  first draft of the Navigate menu gave "Jump to Beginning"/"Jump to
+  End" `Home`/`End` keyboard accelerators — which would have silently
+  reintroduced the exact global-interception problem this build's own
+  core mandate was to eliminate. Caught on review, before shipping;
+  those two menu items now have no accelerator at all, reachable by
+  mouse/menu navigation only, per the correction directive's own
+  instruction.
+- Editor interface substantially reduced, per the explicit list: removed
+  8 coarse-navigation buttons, 3 jump/announce buttons, 6 scrub buttons,
+  3 selection buttons (Select All/Clear/Announce), 6 conventional edit
+  buttons (Cut/Copy/Paste/Delete/Undo/Redo), and 2 save-trigger buttons.
+  "Set Selection Start/End" renamed to "Set First Mark"/"Set Second
+  Mark," matching the requested user-facing terminology. Every HTML
+  removal was coordinated with the corresponding JS (`cacheElements`/
+  `bindEvents`/`updateButtonStates`) so nothing crashes on a null
+  element reference — confirmed via syntax checks, duplicate-ID checks,
+  and re-running the complete pre-existing 10-test suite (all still
+  passing) after the change.
+
+### Interface controls removed or moved
+
+See the bullet above for the exact count; conceptually: all conventional
+Edit/Save commands, all individual coarse-navigation and scrub buttons,
+and non-Mark selection commands moved from permanent buttons into the
+menu (still reachable by their existing keyboard shortcuts where one
+exists). Audition, Play and Land, Preview Selection, and the two Mark
+buttons were explicitly kept as permanent controls, per the correction
+directive's own carve-out for "distinctive editor concepts."
+
+### Menu structure
+
+Editor: File (Save, Save As), Edit (Undo, Redo, Cut, Copy, Paste, Delete
+Selection), View (Keyboard Shortcuts — deliberately minimal, a location
+established for future presentation settings, not populated with
+speculative features), Selection (Set First/Second Mark, Select All,
+Clear Selection, Announce Selection, Trim to Selection), Playback
+(Audition, Play and Land, Preview Selection, all six scrub commands),
+Navigate (Go to Recording Studio, Make This Editor Primary, Go to
+Primary Editor, Jump to Beginning/End, Announce Current Position), Help
+(Keyboard Shortcuts, Keyboard Shortcut Diagnostics). Recording Studio:
+File (New Audio, Open Audio), Navigate (Go to Primary Editor), Help
+(Keyboard Shortcuts, Open Audio Diagnostics).
+
+### Keyboard/shortcut discoverability
+
+Layers 1 (menus, with accelerators shown where a real keyboard shortcut
+exists) and 2 (the existing Keyboard Shortcuts `<details>` disclosure,
+now also expandable and focused directly from Help) are implemented.
+Layer 3 (contextual, per-control supplemental shortcut help via
+standards-based accessible-description association, triggered on focus
+without extra live-region chatter) was **not** implemented this round —
+a real, named gap, not an oversight.
+
+### Playhead slider navigation
+
+Left/Right (10s)/Ctrl+Left/Right (30s)/Home/End are now reachable *only*
+while the playhead slider holds focus — the global interception that
+never reliably worked across 0.2.3–0.2.6 is gone. This was the one
+piece of this build verified with a direct, mechanical check (shortcut
+count and duplicate scan), not just written and assumed correct.
+
+### Primary Editor architecture
+
+Implemented: the Rust-side single-source-of-truth state, role transfer
+(making a different editor Primary simply overwrites it), and the three
+navigation commands. Not implemented: any window visually/
+programmatically exposing "you are currently the Primary Editor" beyond
+a one-time status announcement fired at the moment the role is assigned
+— a window that becomes Primary via a *different* mechanism than
+clicking its own menu item (there isn't one yet) wouldn't currently
+announce it, and no menu item's label or enabled state changes to
+reflect current Primary status.
+
+### Accessibility implementation
+
+axe-core: 0 violations on both pages (36/37 passes, unchanged from
+0.2.6 — no new automated violations introduced by the interface
+reduction). No color-only state was touched. The native menu itself
+inherits Windows' own accessibility implementation directly — not
+independently re-verified here, since that's precisely the point of
+choosing it.
+
+### Files changed
+
+`src-tauri/src/main.rs` (menu construction, event routing, Primary
+Editor state), `app/js/shortcutService.js` (`triggerAction`, removed
+global arrow shortcuts), `app/js/editorWindow.js` (menu-event listener,
+coordinated button removal, new action registrations),
+`app/js/audioEditorLauncher.js` (menu-event listener), `editor.html`
+(button reduction, Mark renaming), `index.html` (version only — the
+Recording Studio's own interface was deliberately not touched this
+round). Deleted, confirmed unused first: `app/js/audioEditorController.js`,
+`app/js/documentManager.js` (orphaned since the 0.2.0 rebuild, never
+cleaned up).
+
+Confirmed by individual diff against the 0.2.6 baseline: `main.js`,
+`recordingEngine.js`, `library.js`, `audioDocument.js`,
+`audioBufferPlayer.js`, `audioClipboard.js`, and `styles.css` are all
+byte-identical — the recording engine, file-opening mechanism, playhead
+math, U/I scrubbing, and Space/X logic were not touched.
+
+### Local tests run
+
+The complete pre-existing 0.2.6 test suite (`node --test tests/*.test.js`)
+— 10/10 still passing after this build's changes. axe-core re-run on
+both pages — 0 violations. JS syntax checks across every file. JSON/YAML
+validation. Duplicate-ID checks on both HTML files. A direct,
+programmatic count/duplicate-scan of the `SHORTCUTS` array confirming
+the six global arrow entries are gone (28 → 22, zero duplicates). **No
+new tests were written** for menu command routing, Primary Editor role
+transfer, no-primary state, or removed-control verification — the
+correction directive's own testing list — a real, named gap.
+
+### Windows build status
+
+Not run. No Rust toolchain that can target Windows exists in this
+environment, and this build's core new surface — real native menu
+construction and event routing — has never been exercised by any
+compiler at all, let alone run.
+
+### What requires real JAWS/NVDA/Narrator testing
+
+Everything about the menu itself: whether it's announced correctly on
+each screen reader, whether Alt+F/Alt+E/etc. mnemonics work as expected,
+whether accelerators shown in the menu (Ctrl+S, Ctrl+Z, etc.) are read
+correctly, and — the specific thing this whole architectural pivot was
+for — whether Left/Right/Home/End on the focused slider now work
+reliably where the global approach didn't. Also whether "Go to Primary
+Editor"/"Go to Recording Studio" correctly move both window focus and
+screen reader attention together.
+
+### Deferred by design
+
+Recording Studio interface reduction and seek slider (explicitly
+permitted to defer if risky — untouched, confirmed by diff). Dynamic
+menu-item enabled/disabled state. Layer 3 contextual shortcut help.
+README rewrite. New tests for the items listed above. Graphic/Open Door
+Design navigation identity (semantic architecture not built either —
+this needs its own pass). A compact mouse-accessible scrub widget
+(mouse access to scrub commands is currently provided by the Playback
+menu itself, which is a genuine, if minimal, mouse-operable path).
+Cleanup of four now-orphaned `registerAction` entries
+(`navBack10`/`navForward10`/`navBack30`/`navForward30` — still
+registered, reachable by nothing now that their buttons and global
+shortcuts are both gone; harmless dead code, not a bug, left for a
+future pass rather than risk touching more than necessary this round).
+Everything explicitly listed as out of scope (Audio Bridge, full
+waveform, Monitor, level matching, major new DSP).
+
+### Risks/limitations
+
+1. The entire native menu implementation is unverified by any compiler
+   or runtime in this environment — the deepest new Windows-specific
+   surface shipped in this project without a single confirmation beyond
+   documentation research.
+2. `try_state`/`set_focus`/the exact `on_menu_event` closure signature
+   were used with real, but not maximal, confidence — `get_webview_window`
+   and `WebviewWindowBuilder` are separately compiler-confirmed from
+   earlier builds; these specific menu-adjacent calls are not.
+3. This is a genuinely partial delivery of an intentionally large
+   request — the foundational architecture (the actual Phase 1 mandate)
+   is real and complete; substantial polish (dynamic state, contextual
+   help, README, tests, Recording Studio parity) remains.
+
 ## Recommended next phase
 
-Real testing already confirmed the core premise of 0.2.5 works: global
-Ctrl+Left/Ctrl+Right genuinely moves the playhead in the real Windows
-build. For 0.2.6, build via GitHub Actions and reproduce the exact
-scenario reported: focus an unrelated control (Back 30 Seconds, Jump to
-Beginning, Select All, Forward 100 Milliseconds), press Ctrl+Right or
-Ctrl+Left, and listen closely to what's actually announced — ideally
-with at least two different screen readers (e.g. JAWS and NVDA, or JAWS
-and Narrator), specifically because this build's fix was deliberately
-screen-reader-neutral and a single-AT test wouldn't confirm that. If the
-symptom is gone, that's useful information either way: it would suggest
-the rapid-repeat race condition (confirmed real and fixed this round)
-was a meaningful contributor, or that the original report coincided with
-key auto-repeat specifically. If the symptom persists identically on
-multiple different screen readers, that's strong evidence for this
-build's own conclusion — that it's AT-implementation behavior, not
-something in this app's code, since the thorough audit this round found
-no focus-movement, no disabling-the-focused-element, and no
-extra-content-in-the-announcement mechanism anywhere in the codebase.
-If it persists on only ONE screen reader, that's a different, genuinely
-new finding worth its own focused investigation rather than another
-guess. Also worth deliberately testing: hold Ctrl+Right down for a
-couple of seconds (real key auto-repeat) and confirm only one, clean,
-final position gets announced rather than a rapid burst of intermediate
-ones — the concrete behavior `tests/announcer.test.js` verifies in
-isolation but that only real AT testing can confirm end-to-end. Nothing
-about the 0.2.5 timeline/slider/waveform-foundation work needs
-re-verifying — it wasn't touched this round.
+Build 0.2.7 via GitHub Actions — this is the first real compile of the
+entire native menu system, so before anything else, confirm it actually
+builds. If it doesn't, the specific `tauri::menu` API calls used
+(`try_state`, `set_focus`, the `on_menu_event` closure signature) are
+the least-confirmed pieces and the first place to look. If it does
+build: open an editor window, confirm all seven menus appear with
+correct items, and test each one's accelerator where shown. Then the
+actual point of this whole architectural pivot — Tab to the playhead
+slider, confirm Left/Right/Ctrl+Left/Ctrl+Right/Home/End move the
+playhead reliably, and confirm those same keys do nothing (correctly)
+when focus is anywhere else. Test "Make This Editor Primary" in one
+editor window, then "Go to Primary Editor" from a second window and from
+the Recording Studio, confirming window focus actually moves both times.
+Test with JAWS, and ideally NVDA or Narrator too, listening for how the
+menu itself is announced and whether accelerators read correctly. Given
+how much of this build is genuinely new, unverified surface, expect this
+round to surface real, specific problems rather than a clean pass — that
+would be the normal, expected outcome for a build this size, not a
+sign anything was rushed. After the menu/slider/Primary-Editor
+foundation is confirmed stable: the substantial remaining scope from
+this same correction directive (README rewrite, the new tests it asked
+for, Layer 3 contextual shortcut help, Recording Studio parity, dynamic
+menu-item state) is the natural next increment, not a new architectural
+question.

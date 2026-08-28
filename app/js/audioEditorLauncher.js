@@ -17,6 +17,44 @@ let el = {};
 export function initAudioEditorLauncher() {
   cacheElements();
   bindEvents();
+  bindMenuEvents();
+}
+
+/**
+ * Listens for clicks on the Recording Studio's own native menu (0.2.7).
+ * "New Audio"/"Open Audio" route to the exact same functions the
+ * permanent buttons already call, so there's still one underlying
+ * implementation, not a second copy. Help items expand the relevant
+ * `<details>` disclosure already in the page.
+ */
+function bindMenuEvents() {
+  if (!isRunningInTauri()) return;
+  const { listen } = window.__TAURI__.event;
+
+  listen("menu-action", (event) => {
+    switch (event.payload) {
+      case "newAudio":
+        triggerNewAudio();
+        return;
+      case "openAudio":
+        triggerOpenAudio();
+        return;
+      case "showKeyboardShortcuts":
+      case "showOpenAudioDiagnostics": {
+        const wantedSummary = event.payload === "showKeyboardShortcuts" ? "Keyboard Shortcuts" : "Open Audio Diagnostics";
+        const target = Array.from(document.querySelectorAll("footer details")).find((d) =>
+          d.querySelector("summary")?.textContent.startsWith(wantedSummary)
+        );
+        if (target) {
+          target.open = true;
+          target.querySelector("summary")?.focus();
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  });
 }
 
 export function registerAudioEditorLauncherShortcuts() {

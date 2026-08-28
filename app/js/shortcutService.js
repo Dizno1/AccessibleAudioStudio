@@ -104,49 +104,24 @@ export const SHORTCUTS = [
     description: "Redo",
   },
 
-  // Stage 1 (Pro Roadmap): playhead navigation and audible scrubbing.
-  // Deliberately bare, unmodified keys, matching the specified design —
-  // see the "known risk" note in docs/Pro Roadmap.md's Stage 1 entry:
-  // every one of these is exactly the category of keystroke a screen
-  // reader's virtual cursor is most likely to intercept for its own
-  // navigation before this app's own keydown handler ever sees it. This
-  // has not been verified with real JAWS in this environment.
-  {
-    action: "navBack10",
-    combo: { key: "arrowleft" },
-    label: "Left Arrow",
-    description: "Move playhead back 10 seconds",
-  },
-  {
-    action: "navForward10",
-    combo: { key: "arrowright" },
-    label: "Right Arrow",
-    description: "Move playhead forward 10 seconds",
-  },
-  {
-    action: "navBack30",
-    combo: { ctrl: true, key: "arrowleft" },
-    label: "Ctrl+Left Arrow",
-    description: "Move playhead back 30 seconds",
-  },
-  {
-    action: "navForward30",
-    combo: { ctrl: true, key: "arrowright" },
-    label: "Ctrl+Right Arrow",
-    description: "Move playhead forward 30 seconds",
-  },
-  {
-    action: "jumpBeginning",
-    combo: { key: "home" },
-    label: "Home",
-    description: "Move playhead to the beginning",
-  },
-  {
-    action: "jumpEnd",
-    combo: { key: "end" },
-    label: "End",
-    description: "Move playhead to the end",
-  },
+  // 0.2.7: the global bare-key Left/Right/Ctrl+Left/Ctrl+Right/Home/End
+  // entries that lived here since Stage 1 (0.2.5) are removed —
+  // deliberately, not an oversight. Real Windows/JAWS testing across
+  // 0.2.3–0.2.6 never confirmed they worked reliably outside the
+  // playhead slider, and the correction directive for 0.2.7 stopped
+  // trying to make that work: "Restrict these playhead navigation
+  // commands to the PLAYHEAD SLIDER when it has focus... Remove the
+  // global interception." That slider-scoped handling
+  // (`bindPlayheadSlider` in editorWindow.js) was never part of this
+  // SHORTCUTS array to begin with — it's the slider element's own
+  // `keydown` listener — so removing these six entries here doesn't
+  // touch that mechanism at all; it only removes the *global*,
+  // any-focus-location interception that never worked reliably. The
+  // underlying navigation actions themselves (`navBack10`, `jumpBeginning`,
+  // etc.) still exist and are still reachable — via the slider, and via
+  // the "Jump to Beginning"/"Jump to End" Navigate menu items (also
+  // deliberately given no keyboard accelerator, for the same reason).
+
   {
     action: "scrubBack1",
     combo: { key: "u" },
@@ -327,6 +302,41 @@ export function initShortcutService() {
   if (listenerAttached) return;
   window.addEventListener("keydown", handleKeydown, true);
   listenerAttached = true;
+}
+
+/**
+ * Invokes the same registered action handler a matching keyboard
+ * shortcut would — the bridge the native application menu (0.2.7) uses,
+ * so a menu click and its equivalent keyboard shortcut share exactly
+ * one underlying command implementation, never two separately
+ * maintained copies of the same logic. `label`/`description` are looked
+ * up from SHORTCUTS when the action has a keyboard equivalent (most do);
+ * for menu-only actions (e.g. "Trim to Selection" isn't currently bound
+ * to any key), the raw action id is used as a fallback label so the
+ * Keyboard Shortcut Diagnostics panel still reports something readable.
+ */
+export function triggerAction(action) {
+  const shortcut = SHORTCUTS.find((s) => s.action === action);
+  const handler = actionHandlers.get(action);
+
+  if (!handler) {
+    recordShortcutEvent({
+      label: shortcut ? shortcut.label : action,
+      description: shortcut ? shortcut.description : "(menu command)",
+      executed: false,
+      reason: "No handler is registered for this action.",
+    });
+    return;
+  }
+
+  const result = handler() || {};
+  recordShortcutEvent({
+    label: shortcut ? shortcut.label : action,
+    description: shortcut ? shortcut.description : "(menu command)",
+    executed: !!result.executed,
+    reason: result.reason,
+    resultText: result.resultText,
+  });
 }
 
 /** Look up the display label (e.g. "Ctrl+Alt+R") for an action, for use in button text. */

@@ -24,7 +24,7 @@ import { encodeWav, encodeMp3, getAudioContext, decodeAudioFile } from "./audioC
 import { BufferPlayer } from "./audioBufferPlayer.js";
 import * as clipboard from "./audioClipboard.js";
 import { AudioDocument } from "./audioDocument.js";
-import { initShortcutService, registerAction } from "./shortcutService.js";
+import { initShortcutService, registerAction, triggerAction } from "./shortcutService.js";
 import { onShortcutEvent, getLastShortcutEvent } from "./shortcutDiagnostics.js";
 import { initAnnouncer } from "./announcer.js";
 
@@ -178,32 +178,12 @@ function cacheElements() {
     playheadSlider: document.getElementById("playhead-slider"),
     timelineCanvas: document.getElementById("timeline-canvas"),
 
-    navButtons: Array.from(document.querySelectorAll("[data-nav]")),
-    scrubButtons: Array.from(document.querySelectorAll("[data-scrub]")),
-    jumpBeginningButton: document.getElementById("jump-doc-beginning-button"),
-    jumpEndButton: document.getElementById("jump-doc-end-button"),
-    announcePositionButton: document.getElementById("announce-doc-position-button"),
-
     setSelectionStartButton: document.getElementById("set-selection-start-button"),
     setSelectionEndButton: document.getElementById("set-selection-end-button"),
-    selectAllButton: document.getElementById("select-all-button"),
-    clearSelectionButton: document.getElementById("clear-selection-button"),
-    announceSelectionButton: document.getElementById("announce-selection-button"),
 
     auditionButton: document.getElementById("audition-button"),
     editorPlayPauseButton: document.getElementById("editor-play-pause-button"),
     editorPreviewButton: document.getElementById("editor-preview-selection-button"),
-
-    cutButton: document.getElementById("cut-button"),
-    copyButton: document.getElementById("copy-button"),
-    pasteButton: document.getElementById("paste-button"),
-    deleteSelectionButton: document.getElementById("delete-selection-button"),
-    trimButton: document.getElementById("trim-button"),
-    undoButton: document.getElementById("undo-button"),
-    redoButton: document.getElementById("redo-button"),
-
-    saveButton: document.getElementById("save-audio-button"),
-    saveAsButton: document.getElementById("save-audio-as-button"),
 
     saveAsForm: document.getElementById("save-as-form"),
     saveAsNameInput: document.getElementById("save-as-name-input"),
@@ -218,6 +198,7 @@ function cacheElements() {
 function bindEvents() {
   bindPlayheadSlider();
   bindTimelineClick();
+  bindMenuEvents();
 
   // Keeps the visual timeline correctly sized and drawn as the window is
   // resized or the OS zoom/magnification level changes — directly
@@ -229,40 +210,61 @@ function bindEvents() {
     if (activeDoc) drawTimeline();
   });
 
-  el.navButtons.forEach((button) => {
-    button.addEventListener("click", () => handleNavigate(parseFloat(button.dataset.nav)));
-  });
-  el.scrubButtons.forEach((button) => {
-    button.addEventListener("click", () => handleScrub(parseFloat(button.dataset.scrub)));
-  });
-  el.jumpBeginningButton.addEventListener("click", () => handleJump(0));
-  el.jumpEndButton.addEventListener("click", () => {
-    if (activeDoc) handleJump(activeDoc.durationSec);
-  });
-  el.announcePositionButton.addEventListener("click", handleAnnouncePosition);
-
   el.setSelectionStartButton.addEventListener("click", handleSetSelectionStart);
   el.setSelectionEndButton.addEventListener("click", handleSetSelectionEnd);
-  el.selectAllButton.addEventListener("click", handleSelectAll);
-  el.clearSelectionButton.addEventListener("click", handleClearSelection);
-  el.announceSelectionButton.addEventListener("click", handleAnnounceSelection);
 
   el.auditionButton.addEventListener("click", handleAuditionPlayback);
   el.editorPlayPauseButton.addEventListener("click", handleLocateAndLand);
   el.editorPreviewButton.addEventListener("click", handlePreviewSelection);
 
-  el.cutButton.addEventListener("click", handleCut);
-  el.copyButton.addEventListener("click", handleCopy);
-  el.pasteButton.addEventListener("click", handlePaste);
-  el.deleteSelectionButton.addEventListener("click", handleDeleteSelection);
-  el.trimButton.addEventListener("click", handleTrim);
-  el.undoButton.addEventListener("click", handleUndo);
-  el.redoButton.addEventListener("click", handleRedo);
-
-  el.saveButton.addEventListener("click", handleSave);
-  el.saveAsButton.addEventListener("click", openSaveAsForm);
   el.confirmSaveAsButton.addEventListener("click", handleConfirmSaveAs);
   el.cancelSaveAsButton.addEventListener("click", closeSaveAsForm);
+}
+
+/**
+ * Listens for clicks on this window's own native menu (0.2.7). Every
+ * item's Rust-side id is the SAME action-name string
+ * `registerShortcutActions()` already registered for the keyboard path
+ * — `triggerAction` (shortcutService.js) is the one shared dispatch
+ * point both paths call into, so a menu click never runs a second,
+ * separately-maintained copy of a command's logic. "Save"/"Save As" are
+ * the one exception worth naming: they have no dedicated permanent
+ * button anymore (see the correction directive — "do not devote an
+ * entire permanent region to two conventional file commands"), so the
+ * menu, Ctrl+S/Ctrl+Shift+S, and this listener are now their only
+ * trigger paths, which is exactly the intended reduction.
+ */
+function bindMenuEvents() {
+  if (!isRunningInTauri()) return;
+  const { listen } = window.__TAURI__.event;
+
+  listen("menu-action", (event) => {
+    const id = event.payload;
+    if (id === "showKeyboardShortcuts" || id === "showShortcutDiagnostics") {
+      const wantedSummary = id === "showKeyboardShortcuts" ? "Keyboard Shortcuts" : "Keyboard Shortcut Diagnostics";
+      const details = Array.from(document.querySelectorAll("footer details")).find((d) =>
+        d.querySelector("summary")?.textContent.startsWith(wantedSummary)
+      );
+      if (details) {
+        details.open = true;
+        details.querySelector("summary")?.focus();
+      }
+      return;
+    }
+    triggerAction(id);
+  });
+
+  listen("menu-action-unavailable", (event) => {
+    if (event.payload === "goToPrimaryEditor") {
+      announceAlert("No Primary Editor is currently set. Use Make This Editor Primary on another editor window first.");
+    }
+  });
+
+  listen("primary-editor-changed", (event) => {
+    if (event.payload === (window.__TAURI__.window ? window.__TAURI__.window.getCurrentWindow().label : null)) {
+      announceStatus("This editor is now the Primary Editor.");
+    }
+  });
 }
 
 function registerShortcutActions() {
@@ -382,6 +384,45 @@ function registerShortcutActions() {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
     handleSetSelectionEnd();
     return { executed: true, resultText: "Mark end set" };
+  });
+
+  // 0.2.7: menu-only actions (no dedicated keyboard shortcut of their own
+  // yet) — registered here so the native menu's "one underlying command"
+  // requirement holds for these too, via the same triggerAction() bridge.
+  registerAction("deleteSelection", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleDeleteSelection();
+    return { executed: true, resultText: "Delete Selection" };
+  });
+  registerAction("selectAll", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleSelectAll();
+    return { executed: true, resultText: "Select All" };
+  });
+  registerAction("clearSelection", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleClearSelection();
+    return { executed: true, resultText: "Clear Selection" };
+  });
+  registerAction("announceSelection", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleAnnounceSelection();
+    return { executed: true, resultText: "Announce Selection" };
+  });
+  registerAction("trimToSelection", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleTrim();
+    return { executed: true, resultText: "Trim to Selection" };
+  });
+  registerAction("previewSelection", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handlePreviewSelection();
+    return { executed: true, resultText: "Preview Selection" };
+  });
+  registerAction("announcePosition", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleAnnouncePosition();
+    return { executed: true, resultText: "Announce Current Position" };
   });
 }
 
@@ -1037,32 +1078,22 @@ function updateButtonStates() {
   const has = !!activeDoc;
   const hasSelection = has && activeDoc.hasSelection();
 
-  [
-    ...el.navButtons,
-    ...el.scrubButtons,
-    el.jumpBeginningButton,
-    el.jumpEndButton,
-    el.announcePositionButton,
-    el.setSelectionStartButton,
-    el.setSelectionEndButton,
-    el.selectAllButton,
-    el.auditionButton,
-    el.editorPlayPauseButton,
-    el.saveButton,
-    el.saveAsButton,
-    el.playheadSlider,
-  ].forEach((button) => (button.disabled = !has));
+  [el.setSelectionStartButton, el.auditionButton, el.editorPlayPauseButton, el.playheadSlider].forEach(
+    (button) => (button.disabled = !has)
+  );
 
-  el.clearSelectionButton.disabled = !hasSelection;
-  el.announceSelectionButton.disabled = !hasSelection;
+  el.setSelectionEndButton.disabled = !has;
   el.editorPreviewButton.disabled = !hasSelection;
-  el.cutButton.disabled = !hasSelection;
-  el.copyButton.disabled = !hasSelection;
-  el.deleteSelectionButton.disabled = !hasSelection;
-  el.trimButton.disabled = !hasSelection;
-  el.pasteButton.disabled = !has;
-  el.undoButton.disabled = !has || !activeDoc.canUndo();
-  el.redoButton.disabled = !has || !activeDoc.canRedo();
+
+  // Note (0.2.7): the native menu's own items are not dynamically
+  // enabled/disabled to match this same state — every menu action still
+  // relies on its existing `if (!activeDoc) return { executed: false,
+  // reason: ... }` guard (already present in every registerShortcutActions
+  // handler) to no-op gracefully with a clear diagnostic reason rather
+  // than crash or misbehave. Wiring live menu-item enabled state would
+  // need a new Rust command JS could call to toggle a specific item,
+  // which this build deliberately deferred — see docs/Pro Roadmap.md,
+  // "Deferred by design."
 }
 
 // ---------------------------------------------------------------------

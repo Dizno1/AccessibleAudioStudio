@@ -72,48 +72,18 @@
       ></canvas>
       <p id="timeline-status" class="sr-only" aria-live="off"></p>
 
-      <h2>Navigate and Select</h2>
+      <h2>Marks and Selection</h2>
       <div class="button-row">
-        <button type="button" data-nav="-30">Back 30 Seconds</button>
-        <button type="button" data-nav="-10">Back 10 Seconds</button>
-        <button type="button" data-nav="-1">Back 1 Second</button>
-        <button type="button" data-nav="-0.1">Back 100 Milliseconds</button>
-        <button type="button" data-nav="0.1">Forward 100 Milliseconds</button>
-        <button type="button" data-nav="1">Forward 1 Second</button>
-        <button type="button" data-nav="10">Forward 10 Seconds</button>
-        <button type="button" data-nav="30">Forward 30 Seconds</button>
-      </div>
-      <div class="button-row">
-        <button type="button" id="jump-doc-beginning-button">Jump to Beginning</button>
-        <button type="button" id="jump-doc-end-button">Jump to End</button>
-        <button type="button" id="announce-doc-position-button">Announce Current Position</button>
-      </div>
-      <div class="button-row">
-        <button type="button" id="set-selection-start-button">Set Selection Start ( [ )</button>
-        <button type="button" id="set-selection-end-button">Set Selection End ( ] )</button>
-        <button type="button" id="select-all-button">Select All</button>
-        <button type="button" id="clear-selection-button">Clear Selection</button>
-        <button type="button" id="announce-selection-button">Announce Selection</button>
+        <button type="button" id="set-selection-start-button">Set First Mark ( [ )</button>
+        <button type="button" id="set-selection-end-button">Set Second Mark ( ] )</button>
       </div>
 
-      <h3>Audible Scrub</h3>
-      <p>
-        Listen your way to an exact boundary — the start of a word, a breath, the edge of a
-        sound — a short bit of the audio itself plays at every step, rather than a silent jump.
-      </p>
-      <div class="button-row">
-        <button type="button" data-scrub="-1">Scrub Back 1 Second (U)</button>
-        <button type="button" data-scrub="1">Scrub Forward 1 Second (I)</button>
-        <button type="button" data-scrub="-0.1">Scrub Back 100 Milliseconds (Shift+U)</button>
-        <button type="button" data-scrub="0.1">Scrub Forward 100 Milliseconds (Shift+I)</button>
-        <button type="button" data-scrub="-0.01">Scrub Back 10 Milliseconds (Ctrl+Shift+U)</button>
-        <button type="button" data-scrub="0.01">Scrub Forward 10 Milliseconds (Ctrl+Shift+I)</button>
-      </div>
-
-      <h3>Playback</h3>
+      <h2>Playback</h2>
       <p>
         Audition (Space) plays without changing your editing position. Play and Land (X) plays
-        and, when you stop it, moves your editing position to exactly where it stopped.
+        and, when you stop it, moves your editing position to exactly where it stopped. Audible
+        Scrub, Delete, Trim, Select All, and other commands are in the Selection and Playback
+        menus.
       </p>
       <div class="button-row">
         <button type="button" id="audition-button">Audition (Space)</button>
@@ -123,30 +93,6 @@
     </section>
 
     <section class="panel">
-      <h2>Edit</h2>
-      <div class="button-row">
-        <button type="button" id="cut-button">Cut (Ctrl+X)</button>
-        <button type="button" id="copy-button">Copy (Ctrl+C)</button>
-        <button type="button" id="paste-button">Paste (Ctrl+V)</button>
-        <button type="button" id="delete-selection-button">Delete Selection</button>
-        <button type="button" id="trim-button">Trim to Selection</button>
-        <button type="button" id="undo-button">Undo (Ctrl+Z)</button>
-        <button type="button" id="redo-button">Redo (Ctrl+Y)</button>
-      </div>
-      <p>
-        Copy and Cut here can be pasted into any other open
-        AccessibleAudioStudio Pro editor window — switch with Alt+Tab, then
-        Paste there.
-      </p>
-    </section>
-
-    <section class="panel">
-      <h2>Save</h2>
-      <div class="button-row">
-        <button type="button" id="save-audio-button">Save (Ctrl+S)</button>
-        <button type="button" id="save-audio-as-button">Save As… (Ctrl+Shift+S)</button>
-      </div>
-
       <div id="save-as-form" hidden class="save-panel">
         <h3 id="save-as-heading">Save Audio As</h3>
         <label for="save-as-name-input">File name</label>
@@ -165,20 +111,20 @@
   </main>
 
   <footer class="app-footer">
-    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.2.6.</p>
+    <p class="footer-meta">Open Door Design — Copyright © 2026 Open Door Design. AccessibleAudioStudio Pro, version 0.2.7.</p>
 
     <details>
       <summary>Keyboard Shortcuts</summary>
       <ul>
-        <li>Left Arrow / Right Arrow — Move playhead 10 seconds</li>
-        <li>Ctrl+Left Arrow / Ctrl+Right Arrow — Move playhead 30 seconds</li>
-        <li>Home / End — Jump to beginning / end</li>
+        <li>Tab to the Playhead slider, then Left Arrow / Right Arrow — Move playhead 10 seconds</li>
+        <li>On the Playhead slider, Ctrl+Left Arrow / Ctrl+Right Arrow — Move playhead 30 seconds</li>
+        <li>On the Playhead slider, Home / End — Jump to beginning / end</li>
         <li>U / I — Scrub 1 second, with audible feedback</li>
         <li>Shift+U / Shift+I — Scrub 100 milliseconds, with audible feedback</li>
         <li>Ctrl+Shift+U / Ctrl+Shift+I — Scrub 10 milliseconds, with audible feedback</li>
         <li>Space — Audition from the current position (does not move it)</li>
         <li>X — Play and Land: stop moves the playhead to where it stopped</li>
-        <li>[ / ] — Set Selection Start / End at the current position</li>
+        <li>[ / ] — Set First Mark / Second Mark at the current position</li>
         <li>Ctrl+X — Cut</li>
         <li>Ctrl+C — Copy</li>
         <li>Ctrl+V — Paste</li>
@@ -187,7 +133,12 @@
         <li>Ctrl+S — Save</li>
         <li>Ctrl+Shift+S — Save As</li>
       </ul>
-      <p>Shortcuts do not work while typing in a text field, and every visible button always works as an alternative.</p>
+      <p>
+        The full command set — including Delete Selection, Trim to Selection, Select All, and
+        more — is also in the File, Edit, Selection, Playback, and Navigate menus. Shortcuts do
+        not work while typing in a text field, and every command is reachable without a
+        keyboard shortcut through the menu.
+      </p>
     </details>
 
     <details>
