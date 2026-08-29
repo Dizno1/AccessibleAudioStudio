@@ -58,6 +58,12 @@ function bindMenuEvents() {
 }
 
 export function registerAudioEditorLauncherShortcuts() {
+  registerAction("goToPrimaryEditor", () => {
+    if (isRunningInTauri()) {
+      window.__TAURI__.core.invoke("focus_primary_editor").catch(() => {});
+    }
+    return { executed: true, resultText: "Go to Primary Editor" };
+  });
   registerAction("openAudio", () => {
     triggerOpenAudio();
     return { executed: true, resultText: "Open Audio" };

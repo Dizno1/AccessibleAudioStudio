@@ -44,6 +44,12 @@ export const SHORTCUTS = [
     label: "Ctrl+Alt+P",
     description: "Play or Pause the selected recording",
   },
+  {
+    action: "goToPrimaryEditor",
+    combo: { ctrl: true, alt: true, key: "g" },
+    label: "Ctrl+Alt+G",
+    description: "Go to Primary Editor",
+  },
 
   // Audio Editor (Pro) — ordinary Windows document/editing conventions,
   // per the Pro roadmap's Keyboard Philosophy: reuse familiar shortcuts

@@ -31,6 +31,7 @@ import { initAnnouncer } from "./announcer.js";
 let el = {};
 const player = new BufferPlayer();
 let activeDoc = null;
+let isPrimaryEditor = false;
 
 function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
@@ -157,7 +158,11 @@ async function updateWindowTitle() {
   if (!isRunningInTauri()) return;
   try {
     const { getCurrentWindow } = window.__TAURI__.window;
-    await getCurrentWindow().setTitle(activeDoc.title);
+    const baseTitle = activeDoc.title;
+    const primaryTitle = baseTitle.endsWith(" - AccessibleAudioStudio Pro")
+      ? baseTitle.replace(" - AccessibleAudioStudio Pro", " - Primary Editor - AccessibleAudioStudio Pro")
+      : `${baseTitle} - Primary Editor`;
+    await getCurrentWindow().setTitle(isPrimaryEditor ? primaryTitle : baseTitle);
   } catch (err) {
     // A window-title update failing is not worth interrupting the user
     // over — the in-page heading (updated separately, see render()) still
@@ -238,8 +243,12 @@ function bindMenuEvents() {
   if (!isRunningInTauri()) return;
   const { listen } = window.__TAURI__.event;
 
-  listen("menu-action", (event) => {
+  listen("menu-action", async (event) => {
     const id = event.payload;
+    if (id === "makePrimaryEditor") {
+      await requestMakePrimaryEditor();
+      return;
+    }
     if (id === "showKeyboardShortcuts" || id === "showShortcutDiagnostics") {
       const wantedSummary = id === "showKeyboardShortcuts" ? "Keyboard Shortcuts" : "Keyboard Shortcut Diagnostics";
       const details = Array.from(document.querySelectorAll("footer details")).find((d) =>
@@ -260,11 +269,52 @@ function bindMenuEvents() {
     }
   });
 
-  listen("primary-editor-changed", (event) => {
-    if (event.payload === (window.__TAURI__.window ? window.__TAURI__.window.getCurrentWindow().label : null)) {
+  listen("primary-editor-state-changed", async (event) => {
+    const currentLabel = window.__TAURI__.window.getCurrentWindow().label;
+    isPrimaryEditor = event.payload === currentLabel;
+    await updateWindowTitle();
+  });
+
+  listen("primary-editor-confirmed", (event) => {
+    if (event.payload === window.__TAURI__.window.getCurrentWindow().label) {
       announceStatus("This editor is now the Primary Editor.");
     }
   });
+}
+
+async function requestMakePrimaryEditor() {
+  if (!isRunningInTauri() || !activeDoc) return;
+  const { invoke } = window.__TAURI__.core;
+  const currentWindow = window.__TAURI__.window.getCurrentWindow();
+  const info = await invoke("get_primary_editor_info");
+
+  if (info.label === currentWindow.label) {
+    announceStatus("This editor is already the Primary Editor.");
+    return;
+  }
+
+  if (info.label) {
+    const currentName = (info.title || "the current Primary Editor")
+      .replace(" - Primary Editor - AccessibleAudioStudio Pro", "")
+      .replace(" - AccessibleAudioStudio Pro", "");
+    const proposedName = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
+    const confirmed = window.confirm(
+      `Make ${proposedName} the Primary Editor instead of ${currentName}?`
+    );
+    if (!confirmed) return;
+  }
+
+  await invoke("set_current_editor_primary");
+}
+
+async function goToPrimaryEditor() {
+  if (!isRunningInTauri()) return false;
+  try {
+    await window.__TAURI__.core.invoke("focus_primary_editor");
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function registerShortcutActions() {
@@ -384,6 +434,11 @@ function registerShortcutActions() {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
     handleSetSelectionEnd();
     return { executed: true, resultText: "Mark end set" };
+  });
+
+  registerAction("goToPrimaryEditor", () => {
+    goToPrimaryEditor();
+    return { executed: true, resultText: "Go to Primary Editor" };
   });
 
   // 0.2.7: menu-only actions (no dedicated keyboard shortcut of their own

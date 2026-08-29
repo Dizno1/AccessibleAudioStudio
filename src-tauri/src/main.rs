@@ -1202,6 +1202,83 @@ use tauri::{Emitter, Manager};
 #[derive(Default)]
 struct PrimaryEditorState(Mutex<Option<String>>);
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrimaryEditorInfo {
+    label: Option<String>,
+    title: Option<String>,
+}
+
+fn primary_editor_label(app: &tauri::AppHandle) -> Option<String> {
+    app.try_state::<PrimaryEditorState>()
+        .and_then(|state| state.0.lock().ok().and_then(|g| g.clone()))
+}
+
+fn focus_primary_editor_window(app: &tauri::AppHandle) -> bool {
+    let Some(label) = primary_editor_label(app) else {
+        return false;
+    };
+    let Some(target) = app.get_webview_window(&label) else {
+        return false;
+    };
+
+    // A Primary Editor may be minimized or behind another app window.
+    // Restore/show it before focusing so this command always means
+    // "take me to that exact editor," never merely change internal state.
+    let _ = target.unminimize();
+    let _ = target.show();
+    target.set_focus().is_ok()
+}
+
+#[tauri::command]
+fn get_primary_editor_info(app: tauri::AppHandle) -> PrimaryEditorInfo {
+    let label = primary_editor_label(&app);
+    let title = label
+        .as_ref()
+        .and_then(|l| app.get_webview_window(l))
+        .and_then(|w| w.title().ok());
+    PrimaryEditorInfo { label, title }
+}
+
+#[tauri::command]
+fn set_current_editor_primary(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    let new_label = window.label().to_string();
+    let old_label = primary_editor_label(&app);
+
+    if let Some(state) = app.try_state::<PrimaryEditorState>() {
+        let mut guard = state.0.lock().map_err(|_| "Could not update Primary Editor state.".to_string())?;
+        *guard = Some(new_label.clone());
+    } else {
+        return Err("Primary Editor state is unavailable.".to_string());
+    }
+
+    // Every editor receives the new owner label so the previous Primary
+    // can immediately remove "Primary Editor" from its OS window title
+    // while the new Primary adds it.
+    for (label, editor) in app.webview_windows() {
+        if label.starts_with("editor-") {
+            let _ = editor.emit("primary-editor-state-changed", new_label.clone());
+        }
+    }
+
+    // Only the editor that actually gained the role announces the change.
+    // Re-selecting the same Primary is intentionally silent.
+    if old_label.as_deref() != Some(new_label.as_str()) {
+        let _ = window.emit("primary-editor-confirmed", new_label);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_primary_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    if focus_primary_editor_window(&app) {
+        Ok(())
+    } else {
+        let _ = window.emit("menu-action-unavailable", "goToPrimaryEditor");
+        Err("No Primary Editor is currently available.".to_string())
+    }
+}
+
 fn build_recording_studio_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let file = SubmenuBuilder::new(app, "File")
         .item(&MenuItemBuilder::new("New Audio").id("newAudio").accelerator("Ctrl+N").build(app)?)
@@ -1313,27 +1390,15 @@ fn handle_menu_event(window: &tauri::WebviewWindow, event: &tauri::menu::MenuEve
             }
         }
         "makePrimaryEditor" => {
-            if let Some(state) = app.try_state::<PrimaryEditorState>() {
-                if let Ok(mut guard) = state.0.lock() {
-                    *guard = Some(window.label().to_string());
-                }
-            }
-            let _ = window.emit("primary-editor-changed", window.label());
+            // Reassignment may require user confirmation, so this routes
+            // through the editor's JS where the accessible confirmation
+            // dialog can name both the current and proposed Primary files.
+            let _ = window.emit("menu-action", "makePrimaryEditor");
         }
         "goToPrimaryEditor" => {
-            let target_label = app
-                .try_state::<PrimaryEditorState>()
-                .and_then(|state| state.0.lock().ok().and_then(|g| g.clone()));
-            if let Some(label) = target_label {
-                if let Some(target_window) = app.get_webview_window(&label) {
-                    let _ = target_window.set_focus();
-                    return;
-                }
+            if !focus_primary_editor_window(app) {
+                let _ = window.emit("menu-action-unavailable", "goToPrimaryEditor");
             }
-            // No Primary Editor set, or its window no longer exists —
-            // tell whichever window the user actually clicked from,
-            // rather than doing nothing with no feedback at all.
-            let _ = window.emit("menu-action-unavailable", "goToPrimaryEditor");
         }
         _ => {
             let _ = window.emit("menu-action", id);
@@ -1374,6 +1439,9 @@ fn main() {
             get_editor_init_info,
             set_shared_audio_clipboard,
             get_shared_audio_clipboard,
+            get_primary_editor_info,
+            set_current_editor_primary,
+            focus_primary_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AccessibleAudioStudio Pro");
