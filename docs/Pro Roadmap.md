@@ -2373,24 +2373,125 @@ that version's own documented `Window`/`WebviewWindow` API — which
 would settle this definitively in a way no amount of further offline
 research can.
 
+## 0.2.7.2 — a real regression comparison, and an uncomfortable finding
+
+Build #28 failed too — the `raw_window_handle`-based replacement from
+0.2.7.1 also didn't compile. Per the correction directive, no third
+window-handle technique was attempted. Instead, the actual 0.2.6 source
+was diffed directly against 0.2.7.1, file by file, rather than inferred
+from memory.
+
+### Known-good 0.2.6: exactly how HWND was obtained
+
+```rust
+let owner_hwnd: HWND = app
+    .get_webview_window("main")
+    .and_then(|w| w.hwnd().ok())
+    .map(|h| HWND(h.0))
+    .unwrap_or_default();
+```
+
+`Cargo.toml`: `tauri = { version = "2", features = [] }` — no
+`raw-window-handle` dependency, no other window-handle-related crate.
+No `Cargo.lock` exists in the 0.2.6 repository (confirmed by direct
+search of the actual uploaded 0.2.6 source, not assumed).
+
+### Broken 0.2.7.1: what actually changed
+
+A direct `diff` of both real files, not a description from memory:
+
+- `src-tauri/Cargo.toml`'s `tauri = { version = "2", features = [] }`
+  line is **byte-for-byte identical** between 0.2.6 and 0.2.7.1. The
+  only difference anywhere in that file (beyond the version number) was
+  the `raw-window-handle` dependency 0.2.7.1 itself added for its own
+  failed repair attempt.
+- `pick_files_native`'s imports and every line before the HWND
+  acquisition are identical between the two versions.
+- The 0.2.7 menu code (`build_recording_studio_menu`,
+  `build_editor_menu`, `handle_menu_event`, `PrimaryEditorState`) lives
+  in entirely separate functions, added after `pick_files_native` in the
+  file, never imported into it, never touching its scope.
+- Neither version has ever had a `Cargo.lock` committed.
+
+### Root cause
+
+**The regression is not in either version's source code.** With an
+unpinned `tauri = { version = "2" }` and no lockfile in *either* 0.2.6
+or 0.2.7, dependency resolution happens fresh on every CI run, against
+whatever is currently published on crates.io at that moment — not
+against whatever was current whenever this code last compiled
+successfully. This is a real, verifiable fact about the repository
+(confirmed by searching both versions directly for a lockfile and
+finding none), not a inference about *why* dependency versions might
+drift.
+
+This has a direct, uncomfortable consequence worth stating plainly
+rather than glossing over: **a fresh build of 0.2.6's exact source,
+run today, would very plausibly resolve the same current Tauri/wry
+release that broke builds #27 and #28, and would very plausibly fail
+with the identical error.** Restoring the known-good *code* is still
+the correct thing to do — it removes two failed speculative rewrites
+and returns to the simplest, best-precedented baseline — but it cannot,
+by itself, be expected to fix a build that fails for a reason external
+to which version of the source is used.
+
+### Repair
+
+Reverted `pick_files_native`'s HWND acquisition to the exact 0.2.6
+implementation — confirmed character-for-character identical (comments
+aside) by direct comparison, not just restored from description. Removed
+the `raw-window-handle` dependency 0.2.7.1 had added, since it is not
+required by the known-good implementation. `cargo check` was attempted
+again in this environment and failed for the same reason as the 0.2.7.1
+attempt: this sandbox's `cargo`/`rustc` 1.75.0 is too old to resolve the
+current dependency tree at all (a transitive dependency now requires the
+`edition2024` Cargo feature). This is itself further evidence that the
+resolvable dependency tree for `tauri = "2"` has moved forward
+significantly — consistent with, though not proof of, the drift theory
+above.
+
+### What this build does not solve, and what would actually need to happen next
+
+This build restores the known-good baseline and removes two failed
+experiments — it does not, by itself, give strong reason to expect
+build #29 to pass, for the reason explained above. The two concrete
+paths that could actually resolve this, neither attempted here per the
+correction directive's explicit scope ("this is one regression repair
+only"):
+
+1. **Pin `tauri` to a specific, deliberately-chosen version** in
+   `Cargo.toml`, rather than a bare major-version spec — but choosing
+   *which* version needs either historical knowledge of one that's
+   confirmed compatible, or inspecting build #27/#28's actual CI log
+   output for the dependency-resolution step, which shows the exact
+   `tauri`/`wry`/`raw-window-handle` versions that were really pulled.
+   That log is the single most useful piece of missing information for
+   deciding this correctly rather than guessing a third time.
+2. **Commit a `Cargo.lock`** once any build succeeds, so every
+   subsequent CI run reuses that exact, known-working dependency set
+   instead of re-resolving fresh — the direct structural fix for the
+   whole class of problem, not just this one symptom.
+
 ## Recommended next phase
 
-Build #28 via GitHub Actions is the direct next step — this repair has
-not been compiler-verified, so confirming it actually resolves the
-`hwnd()` error is the first thing to check, before anything else about
-0.2.7's broader feature set. If it fails at the same call site with a
-new error (most likely something about `HasWindowHandle` not being
-implemented for `WebviewWindow`), check the build log's dependency
-resolution output for the exact `tauri`/`wry` versions actually pulled,
-and look up that specific version's documented window-handle API — that
-would settle the remaining uncertainty definitively. If it compiles:
-resume exactly where 0.2.7's own "Recommended next phase" left off —
-confirm the native menu system, playhead-slider-only arrow navigation,
-and Primary Editor foundation all work as intended on real Windows/JAWS,
-none of which has ever been exercised by any compiler until this build
-actually succeeds. Separately worth doing at some point soon, though
-outside this narrow repair's own scope: committing a `Cargo.lock` file
-once a build succeeds, so future CI runs reuse the exact dependency
-versions confirmed working instead of re-resolving fresh each time —
-the direct fix for the underlying class of problem this whole repair
-was about, not just this one symptom of it.
+Build #29 via GitHub Actions — and, importantly, **before assuming it
+will pass**, actually look at its dependency-resolution log output,
+whether it succeeds or fails. If it fails at the same call site with the
+same `no method named hwnd` error, that directly confirms this build's
+own prediction (source-code identity was never the actual problem) and
+makes the next step unambiguous: capture the exact `tauri`/`wry`
+versions the log shows being resolved, and either pin `Cargo.toml` to a
+version confirmed compatible with `.hwnd()`, or — if a newer
+Tauri/wry genuinely no longer supports it in any form — accept that a
+real API change is needed and design it *from* that confirmed version's
+actual documented surface, not from search-engine research alone. If
+build #29 unexpectedly passes (dependency resolution could plausibly
+land differently run to run without a lockfile), that's valuable
+information too: capture the resolved versions from that successful
+log immediately and commit a `Cargo.lock` right away, before anything
+else changes and the same non-determinism causes this to break again
+later. Either outcome, the single highest-leverage action available
+once any build's dependency resolution is known is committing a
+`Cargo.lock` — it's the only thing that actually stops this specific
+class of "worked before, fails now, nothing in the code changed"
+failure from recurring.
