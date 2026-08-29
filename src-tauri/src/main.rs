@@ -970,12 +970,6 @@ fn open_editor_window_for_path(
     if let Ok(menu) = build_editor_menu(app) {
         let _ = window.set_menu(menu);
     }
-    window.on_menu_event(move |event_window, event| {
-        // Use the window Tauri reports for this exact menu activation.
-        // Capturing the window created above can misroute app-wide menu
-        // events when several editor windows are open.
-        handle_menu_event(event_window, event);
-    });
 
     Ok(())
 }
@@ -1064,12 +1058,6 @@ async fn open_new_editor_window(
     if let Ok(menu) = build_editor_menu(&app) {
         let _ = window.set_menu(menu);
     }
-    window.on_menu_event(move |event_window, event| {
-        // Use the window Tauri reports for this exact menu activation.
-        // Capturing the window created above can misroute app-wide menu
-        // events when several editor windows are open.
-        handle_menu_event(event_window, event);
-    });
 
     Ok(())
 }
@@ -1405,9 +1393,19 @@ fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> 
 /// forwarded to the clicking window's own JavaScript, which already
 /// knows how to run that action via the same dispatch path a keyboard
 /// shortcut uses.
-fn handle_menu_event(window: &tauri::WebviewWindow, event: tauri::menu::MenuEvent) {
+fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id.as_ref();
-    let app = window.app_handle();
+
+    // Tauri menu listeners are global. Route each menu command exactly once
+    // to whichever webview window currently owns keyboard focus.
+    let focused_window = app
+        .webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false));
+
+    let Some(window) = focused_window else {
+        return;
+    };
 
     match id {
         "goToRecordingStudio" => {
@@ -1455,9 +1453,10 @@ fn main() {
                 if let Ok(menu) = build_recording_studio_menu(handle) {
                     let _ = main_window.set_menu(menu);
                 }
-                let main_window_clone = main_window.clone();
-                main_window.on_menu_event(move |_window, event| {
-                    handle_menu_event(&main_window_clone, event);
+                // Register one application-level menu listener. Tauri menu events are
+                // global, so per-window listeners would all fire for one activation.
+                app.on_menu_event(move |app_handle, event| {
+                    handle_menu_event(app_handle, event);
                 });
             }
             Ok(())
