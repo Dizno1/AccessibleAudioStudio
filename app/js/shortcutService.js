@@ -200,7 +200,6 @@ export const RESERVED_FUTURE_ACTIONS = [
   "nextMarker",
   "insertMarker",
   "restartPlayback",
-  "trimStart",
   "trimEnd",
   "normalizeAudio",
   "exportRecording",
@@ -225,7 +224,17 @@ function isEditableTarget(target) {
   // effectively random: whichever control the user happened to have
   // focused (often a select, right after choosing a microphone or
   // profile) silently swallowed the next shortcut.
-  if (tag === "input" || tag === "textarea") return true;
+  if (tag === "textarea") return true;
+  if (tag === "input") {
+    // Range inputs are the Playhead slider. They are not text-entry fields,
+    // so editor-wide commands such as X, Space, U/I and [ ] must continue
+    // to work while the slider has focus. The slider's own navigation keys
+    // (Left/Right, Ctrl+Left/Right, Home/End) are handled separately by the
+    // editor and remain slider-scoped.
+    const type = (target.type || "text").toLowerCase();
+    if (type === "range") return false;
+    return true;
+  }
   if (target.isContentEditable) return true;
   return false;
 }

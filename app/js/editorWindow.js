@@ -345,6 +345,16 @@ async function requestMakePrimaryEditor() {
 
 function confirmPrimaryReassignment(proposedName, currentName) {
   if (!el.primaryEditorDialog) return Promise.resolve(false);
+
+  // Only one confirmation may exist in this editor at a time. Native menu
+  // events can be re-announced or reactivated by assistive technology; a
+  // second activation must focus the existing dialog, never create another
+  // pending promise or leave a stale confirmation behind.
+  if (el.primaryEditorDialog.open) {
+    el.confirmPrimaryEditorButton?.focus();
+    return Promise.resolve(false);
+  }
+
   el.primaryEditorDialogMessage.textContent =
     `Make ${proposedName} the Primary Editor instead of ${currentName}?`;
   el.primaryEditorDialog.showModal();
@@ -404,8 +414,12 @@ async function closeEditorAfterDecision(_saved) {
   } catch (_) {
     // Closing a non-Primary editor does not require shared state to change.
   }
+  // Tauri's JS close-request bridge owns/intercepts closeRequested while a
+  // listener is registered. At this point the user has already made the
+  // close decision, so bypass that interception entirely. `destroy()` is
+  // Tauri's documented forced-close path and does not emit closeRequested.
   allowWindowClose = true;
-  await window.__TAURI__.window.getCurrentWindow().close();
+  await window.__TAURI__.window.getCurrentWindow().destroy();
 }
 
 async function goToPrimaryEditor() {
@@ -568,6 +582,11 @@ function registerShortcutActions() {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
     handleAnnounceSelection();
     return { executed: true, resultText: "Announce Selection" };
+  });
+  registerAction("trimStart", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    handleTrimBeginning();
+    return { executed: true, resultText: "Trim Beginning to Playhead" };
   });
   registerAction("trimToSelection", () => {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
@@ -1084,6 +1103,27 @@ function handleDeleteSelection() {
 
   refreshAfterEdit();
   announceStatus("Selection deleted.");
+}
+
+function handleTrimBeginning() {
+  if (!activeDoc) return;
+  const cutAt = activeDoc.cursorSec;
+  if (cutAt <= 0) {
+    announceAlert("The playhead is already at the beginning.");
+    return;
+  }
+  if (cutAt >= activeDoc.durationSec) {
+    announceAlert("The playhead is at the end. Trim Beginning would remove the entire document.");
+    return;
+  }
+
+  // This command is deliberately playhead-based. Trimming unwanted audio
+  // before the current edit position must not require either Mark.
+  const newBuffer = bufUtil.sliceBuffer(activeDoc.buffer, cutAt, activeDoc.durationSec);
+  activeDoc.applyEdit(newBuffer);
+  setPlayhead(0);
+  refreshAfterEdit();
+  announceStatus(`Trimmed beginning through ${formatTimePrecise(cutAt)}.`);
 }
 
 function handleTrim() {

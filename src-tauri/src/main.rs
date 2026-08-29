@@ -967,7 +967,7 @@ fn open_editor_window_for_path(
         .build()
         .map_err(|e| e.to_string())?;
 
-    if let Ok(menu) = build_editor_menu(app) {
+    if let Ok(menu) = build_editor_menu(app, window.label()) {
         let _ = window.set_menu(menu);
     }
 
@@ -1055,7 +1055,7 @@ async fn open_new_editor_window(
         .build()
         .map_err(|e| e.to_string())?;
 
-    if let Ok(menu) = build_editor_menu(&app) {
+    if let Ok(menu) = build_editor_menu(&app, window.label()) {
         let _ = window.set_menu(menu);
     }
 
@@ -1293,93 +1293,86 @@ fn focus_primary_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> 
     }
 }
 
+fn scoped_menu_id(window_label: &str, action: &str) -> String {
+    format!("{}::{}", window_label, action)
+}
+
 fn build_recording_studio_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let owner = "main";
     let file = SubmenuBuilder::new(app, "File")
-        .item(&MenuItemBuilder::new("New Audio Ctrl+N").id("newAudio").build(app)?)
-        .item(&MenuItemBuilder::new("Open Audio… Ctrl+O").id("openAudio").build(app)?)
+        .item(&MenuItemBuilder::new("New Audio Ctrl+N").id(scoped_menu_id(owner, "newAudio")).build(app)?)
+        .item(&MenuItemBuilder::new("Open Audio… Ctrl+O").id(scoped_menu_id(owner, "openAudio")).build(app)?)
         .build()?;
 
     let navigate = SubmenuBuilder::new(app, "Navigate")
-        .item(&MenuItemBuilder::new("Go to Primary Editor").id("goToPrimaryEditor").build(app)?)
+        .item(&MenuItemBuilder::new("Go to Primary Editor").id(scoped_menu_id(owner, "goToPrimaryEditor")).build(app)?)
         .build()?;
 
     let help = SubmenuBuilder::new(app, "Help")
-        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id("showKeyboardShortcuts").build(app)?)
-        .item(&MenuItemBuilder::new("Open Audio Diagnostics").id("showOpenAudioDiagnostics").build(app)?)
+        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id(scoped_menu_id(owner, "showKeyboardShortcuts")).build(app)?)
+        .item(&MenuItemBuilder::new("Open Audio Diagnostics").id(scoped_menu_id(owner, "showOpenAudioDiagnostics")).build(app)?)
         .build()?;
 
     MenuBuilder::new(app).items(&[&file, &navigate, &help]).build()
 }
 
-fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_editor_menu(app: &tauri::AppHandle, owner: &str) -> tauri::Result<Menu<tauri::Wry>> {
     let file = SubmenuBuilder::new(app, "File")
-        .item(&MenuItemBuilder::new("Save Ctrl+S").id("saveAudio").build(app)?)
-        .item(&MenuItemBuilder::new("Save As… Ctrl+Shift+S").id("saveAudioAs").build(app)?)
+        .item(&MenuItemBuilder::new("Save Ctrl+S").id(scoped_menu_id(owner, "saveAudio")).build(app)?)
+        .item(&MenuItemBuilder::new("Save As… Ctrl+Shift+S").id(scoped_menu_id(owner, "saveAudioAs")).build(app)?)
         .build()?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
-        .item(&MenuItemBuilder::new("Undo Ctrl+Z").id("undoEdit").build(app)?)
-        .item(&MenuItemBuilder::new("Redo Ctrl+Y").id("redoEdit").build(app)?)
+        .item(&MenuItemBuilder::new("Undo Ctrl+Z").id(scoped_menu_id(owner, "undoEdit")).build(app)?)
+        .item(&MenuItemBuilder::new("Redo Ctrl+Y").id(scoped_menu_id(owner, "redoEdit")).build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Cut Ctrl+X").id("cutSelection").build(app)?)
-        .item(&MenuItemBuilder::new("Copy Ctrl+C").id("copySelection").build(app)?)
-        .item(&MenuItemBuilder::new("Paste Ctrl+V").id("pasteSelection").build(app)?)
-        .item(&MenuItemBuilder::new("Delete Selection").id("deleteSelection").build(app)?)
+        .item(&MenuItemBuilder::new("Cut Ctrl+X").id(scoped_menu_id(owner, "cutSelection")).build(app)?)
+        .item(&MenuItemBuilder::new("Copy Ctrl+C").id(scoped_menu_id(owner, "copySelection")).build(app)?)
+        .item(&MenuItemBuilder::new("Paste Ctrl+V").id(scoped_menu_id(owner, "pasteSelection")).build(app)?)
+        .item(&MenuItemBuilder::new("Delete Selection").id(scoped_menu_id(owner, "deleteSelection")).build(app)?)
         .build()?;
 
-    // Deliberately minimal for now — see the correction directive:
-    // "Establish View as a permanent architectural location even if it
-    // initially contains few commands... Do not implement major future
-    // View features in this build merely to populate the menu." Its one
-    // real command today (Keyboard Shortcuts) is also reachable from
-    // Help, since it's genuinely both a presentation setting's home and
-    // a discoverability aid; nothing fake was added just to fill space.
     let view = SubmenuBuilder::new(app, "View")
-        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id("showKeyboardShortcuts").build(app)?)
+        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id(scoped_menu_id(owner, "showKeyboardShortcuts")).build(app)?)
         .build()?;
 
     let selection = SubmenuBuilder::new(app, "Selection")
-        .item(&MenuItemBuilder::new("Set First Mark [").id("setMarkStart").build(app)?)
-        .item(&MenuItemBuilder::new("Set Second Mark ]").id("setMarkEnd").build(app)?)
+        .item(&MenuItemBuilder::new("Set First Mark [").id(scoped_menu_id(owner, "setMarkStart")).build(app)?)
+        .item(&MenuItemBuilder::new("Set Second Mark ]").id(scoped_menu_id(owner, "setMarkEnd")).build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Select All").id("selectAll").build(app)?)
-        .item(&MenuItemBuilder::new("Clear Selection").id("clearSelection").build(app)?)
-        .item(&MenuItemBuilder::new("Announce Selection").id("announceSelection").build(app)?)
-        .item(&MenuItemBuilder::new("Trim to Selection").id("trimToSelection").build(app)?)
+        .item(&MenuItemBuilder::new("Select All").id(scoped_menu_id(owner, "selectAll")).build(app)?)
+        .item(&MenuItemBuilder::new("Clear Selection").id(scoped_menu_id(owner, "clearSelection")).build(app)?)
+        .item(&MenuItemBuilder::new("Announce Selection").id(scoped_menu_id(owner, "announceSelection")).build(app)?)
+        .item(&MenuItemBuilder::new("Trim Beginning to Playhead").id(scoped_menu_id(owner, "trimStart")).build(app)?)
+        .item(&MenuItemBuilder::new("Trim to Selection").id(scoped_menu_id(owner, "trimToSelection")).build(app)?)
         .build()?;
 
     let playback = SubmenuBuilder::new(app, "Playback")
-        .item(&MenuItemBuilder::new("Audition Space").id("auditionPlayback").build(app)?)
-        .item(&MenuItemBuilder::new("Play and Land X").id("locateAndLand").build(app)?)
-        .item(&MenuItemBuilder::new("Preview Selection").id("previewSelection").build(app)?)
+        .item(&MenuItemBuilder::new("Audition Space").id(scoped_menu_id(owner, "auditionPlayback")).build(app)?)
+        .item(&MenuItemBuilder::new("Play and Land X").id(scoped_menu_id(owner, "locateAndLand")).build(app)?)
+        .item(&MenuItemBuilder::new("Preview Selection").id(scoped_menu_id(owner, "previewSelection")).build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Scrub Back 1 Second U").id("scrubBack1").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Forward 1 Second I").id("scrubForward1").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Back 100 Milliseconds Shift+U").id("scrubBack100ms").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Forward 100 Milliseconds Shift+I").id("scrubForward100ms").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Back 10 Milliseconds Ctrl+Shift+U").id("scrubBack10ms").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Forward 10 Milliseconds Ctrl+Shift+I").id("scrubForward10ms").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 1 Second U").id(scoped_menu_id(owner, "scrubBack1")).build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 1 Second I").id(scoped_menu_id(owner, "scrubForward1")).build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 100 Milliseconds Shift+U").id(scoped_menu_id(owner, "scrubBack100ms")).build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 100 Milliseconds Shift+I").id(scoped_menu_id(owner, "scrubForward100ms")).build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 10 Milliseconds Ctrl+Shift+U").id(scoped_menu_id(owner, "scrubBack10ms")).build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 10 Milliseconds Ctrl+Shift+I").id(scoped_menu_id(owner, "scrubForward10ms")).build(app)?)
         .build()?;
 
     let navigate = SubmenuBuilder::new(app, "Navigate")
-        .item(&MenuItemBuilder::new("Go to Recording Studio").id("goToRecordingStudio").build(app)?)
-        .item(&MenuItemBuilder::new("Make This Editor Primary").id("makePrimaryEditor").build(app)?)
-        .item(&MenuItemBuilder::new("Go to Primary Editor").id("goToPrimaryEditor").build(app)?)
+        .item(&MenuItemBuilder::new("Go to Recording Studio").id(scoped_menu_id(owner, "goToRecordingStudio")).build(app)?)
+        .item(&MenuItemBuilder::new("Make This Editor Primary").id(scoped_menu_id(owner, "makePrimaryEditor")).build(app)?)
+        .item(&MenuItemBuilder::new("Go to Primary Editor").id(scoped_menu_id(owner, "goToPrimaryEditor")).build(app)?)
         .separator()
-        // Deliberately no keyboard accelerator on these two — a menu
-        // accelerator is a global keybinding exactly like the one that
-        // caused the 0.2.3–0.2.6 arrow-key saga (see docs/Pro Roadmap.md,
-        // 0.2.7). Home/End's real keyboard path is the playhead slider,
-        // per the correction directive; these remain reachable by mouse/
-        // menu navigation only.
-        .item(&MenuItemBuilder::new("Jump to Beginning").id("jumpBeginning").build(app)?)
-        .item(&MenuItemBuilder::new("Jump to End").id("jumpEnd").build(app)?)
-        .item(&MenuItemBuilder::new("Announce Current Position").id("announcePosition").build(app)?)
+        .item(&MenuItemBuilder::new("Jump to Beginning").id(scoped_menu_id(owner, "jumpBeginning")).build(app)?)
+        .item(&MenuItemBuilder::new("Jump to End").id(scoped_menu_id(owner, "jumpEnd")).build(app)?)
+        .item(&MenuItemBuilder::new("Announce Current Position").id(scoped_menu_id(owner, "announcePosition")).build(app)?)
         .build()?;
 
     let help = SubmenuBuilder::new(app, "Help")
-        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id("showKeyboardShortcuts").build(app)?)
-        .item(&MenuItemBuilder::new("Keyboard Shortcut Diagnostics").id("showShortcutDiagnostics").build(app)?)
+        .item(&MenuItemBuilder::new("Keyboard Shortcuts").id(scoped_menu_id(owner, "showKeyboardShortcuts")).build(app)?)
+        .item(&MenuItemBuilder::new("Keyboard Shortcut Diagnostics").id(scoped_menu_id(owner, "showShortcutDiagnostics")).build(app)?)
         .build()?;
 
     MenuBuilder::new(app)
@@ -1387,48 +1380,28 @@ fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> 
         .build()
 }
 
-/// One shared handler for both window types' menus. Two commands —
-/// switching which *window* has focus — are genuinely Rust-only
-/// operations and are handled directly here; every other item is simply
-/// forwarded to the clicking window's own JavaScript, which already
-/// knows how to run that action via the same dispatch path a keyboard
-/// shortcut uses.
+/// Menu events are application-global in Tauri. Every native menu item is
+/// therefore stamped with its owning window label ("editor-N::action" or
+/// "main::action") when that menu is built. Dispatch never guesses which
+/// window had focus while a native menu was open.
 fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
-    let id = event.id.as_ref();
-
-    // Tauri menu listeners are global. Route each menu command exactly once
-    // to whichever webview window currently owns keyboard focus.
-    let focused_window = app
-        .webview_windows()
-        .into_values()
-        .find(|window| window.is_focused().unwrap_or(false));
-
-    let Some(window) = focused_window else {
+    let raw_id: &str = event.id.as_ref();
+    let Some((owner_label, action)) = raw_id.split_once("::") else {
         return;
     };
 
-    match id {
+    let Some(window) = app.get_webview_window(owner_label) else {
+        return;
+    };
+
+    match action {
         "goToRecordingStudio" => {
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_focus();
             }
         }
-        "makePrimaryEditor" => {
-            // Reassignment may require user confirmation, so this routes
-            // through the editor's JS where the accessible confirmation
-            // dialog can name both the current and proposed Primary files.
-            let _ = window.emit("menu-action", "makePrimaryEditor");
-        }
-        "goToPrimaryEditor" => {
-            // Route through the source window's JS instead of changing
-            // focus from inside the native menu callback. Windows may
-            // restore focus to the menu owner as the menu dismisses;
-            // the JS path runs after that callback and invokes the same
-            // authoritative Rust focus command.
-            let _ = window.emit("menu-action", "goToPrimaryEditor");
-        }
         _ => {
-            let _ = window.emit("menu-action", id);
+            let _ = window.emit("menu-action", action);
         }
     }
 }
