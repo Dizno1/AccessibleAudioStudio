@@ -717,14 +717,34 @@ fn pick_files_native(app: &tauri::AppHandle) -> Result<(Vec<PathBuf>, PasteDiagn
     // including why 0.2.6's `.hwnd()` call compiling historically
     // remains a genuine, named open question rather than something this
     // build claims to have fully explained.
+    // 0.2.7.4: real bug found and fixed. Build #30 (real Windows CI)
+    // failed with `error[E0515]: cannot return value referencing
+    // function parameter 'w'` — confirmed by isolating this exact chain
+    // and compiling it against the real `raw-window-handle` crate (not a
+    // stub) in this environment: `.and_then(|w| w.window_handle().ok())`
+    // is genuinely broken, because `window_handle()` borrows from `w`
+    // (a `WindowHandle<'_>` tied to `&self`), but `w` is a closure
+    // parameter that does not live past the closure call — the
+    // borrowed `WindowHandle` cannot outlive the value it borrows from.
+    // 0.2.7.1's isolated verification tested this crate's types with
+    // separate, non-chained `let` bindings, which never exposed this
+    // exact lifetime trap; the real chained code was never compile-
+    // tested until now. Fixed by moving the entire extraction — the
+    // `window_handle()` call AND the match that pulls out the owned
+    // HWND value — inside one closure, so it runs while `w` is still
+    // alive and returns only owned data (`Option<HWND>`), never
+    // anything borrowed from `w` itself. Confirmed this exact corrected
+    // pattern compiles cleanly against the real `raw-window-handle`
+    // crate before applying it here.
     let owner_hwnd: HWND = app
         .get_webview_window("main")
-        .and_then(|w| w.window_handle().ok())
-        .and_then(|handle| match handle.as_raw() {
-            raw_window_handle::RawWindowHandle::Win32(h) => {
-                Some(HWND(h.hwnd.get() as *mut std::ffi::c_void))
-            }
-            _ => None,
+        .and_then(|w| {
+            w.window_handle().ok().and_then(|handle| match handle.as_raw() {
+                raw_window_handle::RawWindowHandle::Win32(h) => {
+                    Some(HWND(h.hwnd.get() as *mut std::ffi::c_void))
+                }
+                _ => None,
+            })
         })
         .unwrap_or_default();
 

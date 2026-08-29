@@ -2555,25 +2555,159 @@ fails identically, the specific compiler error is the essential missing
 piece for the next round, since this build's evidence trail has now
 exhausted what documentation research alone can determine.
 
+## 0.2.7.4 — the real bug, found and verified with a real compiler
+
+Build #30's compiler errors were the first genuine progress past the
+HWND question — 0.2.7.3's window-handle fix compiled far enough to
+uncover a *second*, real, unrelated bug.
+
+### Build #30 errors
+
+Only available secondhand, via Copilot's summary: `E0515` ("return
+value borrows data owned by the current function"), `E0599` ("no method
+named `clone` found for `&String`"), and a general description of
+"lifetime issues" and "references to local variables escaping their
+scope," attributed in Copilot's narrative to `parse_multi_select_buffer`
+around line 774 and a proposed fix involving `String::from_utf16_lossy()`.
+
+### Root cause for each error
+
+**Copilot's specific claim was checked against a real compiler and is
+false**, not just doubted: `String::from_utf16_lossy()` returns an owned
+`String` directly, confirmed by compiling a two-line program where a
+function that only accepts owned `String` is called with its result —
+if it had returned `Cow<str>` as claimed, this would not compile; it
+does. This is a well-documented, real difference from
+`String::from_utf8_lossy()` (the byte-slice version, which *does* return
+`Cow<str>`) that the tool appears to have confused. Its cited line
+number doesn't match either — line 774 in the actual source is the
+function signature, not the `.push()` call it described.
+
+`parse_multi_select_buffer` itself was re-confirmed character-for-
+character identical to the version unit-tested with real rustc since
+0.1.6 — genuinely untouched, and not the source of any new error.
+
+**The real bug was found by tracing the actual HWND-acquisition chain
+line by line and testing it directly, not by trusting either Copilot's
+or this file's own prior confidence.** `pick_files_native`'s 0.2.7.3
+code:
+
+```rust
+.and_then(|w| w.window_handle().ok())
+.and_then(|handle| match handle.as_raw() { ... })
+```
+
+`window_handle()`'s real signature (confirmed from Tauri's own docs.rs,
+in the 0.2.7.3 investigation) is `fn window_handle(&self) -> Result<
+WindowHandle<'_>, HandleError>` — the returned `WindowHandle<'_>`
+borrows from `&self`. In the first closure, `w` is a **function
+parameter** owned only for the duration of that closure call; the
+`WindowHandle` borrowed from it cannot outlive `w` itself. This is
+exactly `E0515`. Confirmed directly: this exact chain, compiled against
+the real `raw-window-handle` crate (downloaded and built in this
+environment, not a stub) produces:
+
+```
+error[E0515]: cannot return value referencing function parameter `w`
+    .and_then(|w| w.window_handle().ok())
+               -^^^^^^^^^^^^^^^^^^^^^
+               `w` is borrowed here
+```
+
+This is very likely also the root cause behind Copilot's `E0599`
+"no method `clone` found for `&String`" — Rust's compiler frequently
+produces confusing, seemingly-unrelated cascading errors once type
+inference fails at one point in a chain; a single root lifetime failure
+misattributed and multiplied into a garbled secondary diagnostic is a
+well-known pattern, though this specific connection cannot be confirmed
+without the raw compiler output.
+
+**Why this was never caught in 0.2.7.1 or 0.2.7.3's own verification:**
+those rounds tested `raw-window-handle`'s types and fields correctly,
+but using separate, non-chained `let` bindings in the isolated test —
+which never exposed this exact borrow-across-a-closure-boundary trap.
+The real, chained production code was never actually compiled until
+this round.
+
+### 0.2.6 comparison
+
+Not applicable to this specific error — 0.2.6 used `.hwnd()`, an
+entirely different (and, per 0.2.7.3's investigation, likely never
+actually valid) API with no lifetime-parameterized return type to create
+this class of problem in the first place. This bug is specific to the
+`window_handle()`-based replacement.
+
+### Fix
+
+Restructured so the entire extraction — the `window_handle()` call and
+the `match` that pulls out the owned `HWND` — happens inside one
+closure, while `w` is still alive, returning only owned data
+(`Option<HWND>`), never anything borrowed from `w`:
+
+```rust
+.and_then(|w| {
+    w.window_handle().ok().and_then(|handle| match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => {
+            Some(HWND(h.hwnd.get() as *mut std::ffi::c_void))
+        }
+        _ => None,
+    })
+})
+```
+
+This exact corrected pattern was compiled against the real
+`raw-window-handle` crate before being applied to `main.rs` — it
+compiles cleanly (confirmed by a successful build; the test binary's own
+runtime panic is expected and irrelevant, since the stub's
+`window_handle()` implementation is deliberately `unimplemented!()` —
+only the *compile* result matters here, and it succeeded).
+
+Scanned the rest of `main.rs` for the same pattern elsewhere
+(`.and_then(...).ok())` chains, `window_handle`/`.as_raw()` usage) —
+this is the only occurrence.
+
+### Files changed
+
+`src-tauri/src/main.rs` only. `Cargo.toml` and `Cargo.lock` are
+untouched — this was a pure code restructuring using the dependency
+already pinned in 0.2.7.3, requiring no new dependency resolution.
+
+### Tests run
+
+The isolated, real compile test described above (both the broken and
+fixed versions, against the actual `raw-window-handle` crate). The
+complete existing JS suite (10/10 passing). Full JS syntax check across
+every file. Structural checks on `main.rs` (brace/paren balance).
+Re-confirmed `parse_multi_select_buffer` is still character-for-
+character identical to its 0.1.6 tested reference. `cargo check` on the
+full project was not re-attempted this round — this sandbox's outdated
+toolchain (confirmed in 0.2.7.1/0.2.7.3) cannot resolve the current
+dependency tree regardless of source-code correctness, so it would not
+have added information beyond what the targeted isolated test already
+confirmed.
+
+### Windows build status
+
+Not verified. This is a real, compiler-confirmed fix for a real,
+compiler-confirmed bug — genuinely different footing than 0.2.7.3's
+"well-evidenced but unverified" repair — but only build #31 can confirm
+whether this is the last compile error standing between this codebase
+and an actual successful Windows build.
+
 ## Recommended next phase
 
-Build #30 via GitHub Actions is the real test of this round's work. If
-it fails, **the specific compiler error text is the single most valuable
-thing to bring back** — this environment could confirm the
-`HasWindowHandle`/`window_handle()` trait and struct usage are correct
-against real, sourced documentation, but could not compile-test the
-actual code, and build #28's exact failure (same mechanism, same general
-approach) was never available to learn from directly. Any error at all —
-even a completely different one than `no method named hwnd` — is more
-useful than another round of research without it. If it succeeds:
-confirm the committed `Cargo.lock` is actually what the CI run used
-(check the build log's dependency list against `tauri 2.11.5`/
-`wry 0.55.1`/`raw-window-handle 0.6.2`), and from that point forward,
-this repository should never again silently re-resolve a different
-dependency set between builds — that reproducibility problem, not just
-this one symptom of it, is now structurally fixed. Once the Windows
-build is confirmed passing, the substantial remaining 0.2.7 scope
-(README rewrite, the requested test additions, Layer 3 contextual
-shortcut help, Recording Studio parity, dynamic menu-item state) is the
-natural next increment — none of that architecture needs re-verifying
-on its own, only the build needs to actually succeed first.
+Build #31 via GitHub Actions. If it fails, the exact raw compiler error
+text — copied verbatim, not paraphrased through Copilot — would resolve
+things far faster than another round of inference; this round only
+became productive once an isolated compile test replaced secondhand
+description with a real, reproducible error. If it succeeds: confirm the
+committed `Cargo.lock` is what the CI run actually used (check the build
+log's dependency list against `tauri 2.11.5`/`wry 0.55.1`/
+`raw-window-handle 0.6.2`), and treat the underlying window-handle/
+dependency-reproducibility problem as closed. From there, the
+substantial remaining 0.2.7 scope (README rewrite, the requested test
+additions, Layer 3 contextual shortcut help, Recording Studio parity,
+dynamic menu-item state) is the natural next increment — none of that
+architecture needs re-verifying on its own, only the build needed to
+actually succeed first, which is now closer than at any prior point in
+this line.
