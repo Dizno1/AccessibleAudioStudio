@@ -1406,7 +1406,7 @@ fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> 
 /// knows how to run that action via the same dispatch path a keyboard
 /// shortcut uses.
 fn handle_menu_event(window: &tauri::WebviewWindow, event: tauri::menu::MenuEvent) {
-    let id = event.id().0.as_str();
+    let id = event.id.as_ref();
     let app = window.app_handle();
 
     match id {
