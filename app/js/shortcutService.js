@@ -98,6 +98,12 @@ export const SHORTCUTS = [
     description: "Paste",
   },
   {
+    action: "deleteSelection",
+    combo: { key: "delete" },
+    label: "Delete",
+    description: "Delete Selection",
+  },
+  {
     action: "undoEdit",
     combo: { ctrl: true, key: "z" },
     label: "Ctrl+Z",
