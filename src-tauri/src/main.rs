@@ -1191,7 +1191,7 @@ async fn get_shared_audio_clipboard(
 /// do, so those two are handled directly in the menu-event handler
 /// rather than emitted to JS at all.
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Which editor window (if any) currently holds the Primary Editor role
 /// — a role assigned to an ordinary document window, not a separate
