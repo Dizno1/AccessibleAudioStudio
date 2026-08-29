@@ -260,6 +260,10 @@ function bindMenuEvents() {
       }
       return;
     }
+    if (id === "goToPrimaryEditor") {
+      await goToPrimaryEditor();
+      return;
+    }
     triggerAction(id);
   });
 
@@ -310,6 +314,10 @@ async function requestMakePrimaryEditor() {
 async function goToPrimaryEditor() {
   if (!isRunningInTauri()) return false;
   try {
+    // When invoked from a native menu, let Windows finish dismissing the
+    // menu before moving focus. Otherwise the menu owner can reclaim
+    // focus immediately after Rust focuses the Primary Editor.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await window.__TAURI__.core.invoke("focus_primary_editor");
     return true;
   } catch (_) {
@@ -942,10 +950,19 @@ async function handlePaste() {
       activeDoc.numChannels
     );
 
-    const insertAt = activeDoc.hasSelection() ? activeDoc.selection.startSec : activeDoc.cursorSec;
-    const newBuffer = bufUtil.insertBufferAt(activeDoc.buffer, reconciled, insertAt);
+    const replacingSelection = activeDoc.hasSelection();
+    const insertAt = replacingSelection ? activeDoc.selection.startSec : activeDoc.cursorSec;
+    const destination = replacingSelection
+      ? bufUtil.deleteRange(activeDoc.buffer, activeDoc.selection.startSec, activeDoc.selection.endSec)
+      : activeDoc.buffer;
+    const newBuffer = bufUtil.insertBufferAt(destination, reconciled, insertAt);
     activeDoc.applyEdit(newBuffer);
-    setPlayhead(insertAt + reconciled.length / reconciled.sampleRate);
+
+    // The newly pasted/replaced audio becomes the active selection, per
+    // the Pro editing model. The playhead lands at its end.
+    const pastedDuration = reconciled.length / reconciled.sampleRate;
+    activeDoc.selection = { startSec: insertAt, endSec: insertAt + pastedDuration };
+    setPlayhead(insertAt + pastedDuration);
 
     refreshAfterEdit();
     announceStatus(converted ? "Audio converted to match destination. Audio pasted." : "Audio pasted.");

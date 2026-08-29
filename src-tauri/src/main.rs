@@ -1281,8 +1281,8 @@ fn focus_primary_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> 
 
 fn build_recording_studio_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let file = SubmenuBuilder::new(app, "File")
-        .item(&MenuItemBuilder::new("New Audio").id("newAudio").accelerator("Ctrl+N").build(app)?)
-        .item(&MenuItemBuilder::new("Open Audio…").id("openAudio").accelerator("Ctrl+O").build(app)?)
+        .item(&MenuItemBuilder::new("New Audio Ctrl+N").id("newAudio").build(app)?)
+        .item(&MenuItemBuilder::new("Open Audio… Ctrl+O").id("openAudio").build(app)?)
         .build()?;
 
     let navigate = SubmenuBuilder::new(app, "Navigate")
@@ -1299,17 +1299,17 @@ fn build_recording_studio_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tau
 
 fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let file = SubmenuBuilder::new(app, "File")
-        .item(&MenuItemBuilder::new("Save").id("saveAudio").accelerator("Ctrl+S").build(app)?)
-        .item(&MenuItemBuilder::new("Save As…").id("saveAudioAs").accelerator("Ctrl+Shift+S").build(app)?)
+        .item(&MenuItemBuilder::new("Save Ctrl+S").id("saveAudio").build(app)?)
+        .item(&MenuItemBuilder::new("Save As… Ctrl+Shift+S").id("saveAudioAs").build(app)?)
         .build()?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
-        .item(&MenuItemBuilder::new("Undo").id("undoEdit").accelerator("Ctrl+Z").build(app)?)
-        .item(&MenuItemBuilder::new("Redo").id("redoEdit").accelerator("Ctrl+Y").build(app)?)
+        .item(&MenuItemBuilder::new("Undo Ctrl+Z").id("undoEdit").build(app)?)
+        .item(&MenuItemBuilder::new("Redo Ctrl+Y").id("redoEdit").build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Cut").id("cutSelection").accelerator("Ctrl+X").build(app)?)
-        .item(&MenuItemBuilder::new("Copy").id("copySelection").accelerator("Ctrl+C").build(app)?)
-        .item(&MenuItemBuilder::new("Paste").id("pasteSelection").accelerator("Ctrl+V").build(app)?)
+        .item(&MenuItemBuilder::new("Cut Ctrl+X").id("cutSelection").build(app)?)
+        .item(&MenuItemBuilder::new("Copy Ctrl+C").id("copySelection").build(app)?)
+        .item(&MenuItemBuilder::new("Paste Ctrl+V").id("pasteSelection").build(app)?)
         .item(&MenuItemBuilder::new("Delete Selection").id("deleteSelection").build(app)?)
         .build()?;
 
@@ -1325,8 +1325,8 @@ fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> 
         .build()?;
 
     let selection = SubmenuBuilder::new(app, "Selection")
-        .item(&MenuItemBuilder::new("Set First Mark").id("setMarkStart").accelerator("[").build(app)?)
-        .item(&MenuItemBuilder::new("Set Second Mark").id("setMarkEnd").accelerator("]").build(app)?)
+        .item(&MenuItemBuilder::new("Set First Mark [").id("setMarkStart").build(app)?)
+        .item(&MenuItemBuilder::new("Set Second Mark ]").id("setMarkEnd").build(app)?)
         .separator()
         .item(&MenuItemBuilder::new("Select All").id("selectAll").build(app)?)
         .item(&MenuItemBuilder::new("Clear Selection").id("clearSelection").build(app)?)
@@ -1335,16 +1335,16 @@ fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> 
         .build()?;
 
     let playback = SubmenuBuilder::new(app, "Playback")
-        .item(&MenuItemBuilder::new("Audition").id("auditionPlayback").accelerator("Space").build(app)?)
-        .item(&MenuItemBuilder::new("Play and Land").id("locateAndLand").accelerator("X").build(app)?)
+        .item(&MenuItemBuilder::new("Audition Space").id("auditionPlayback").build(app)?)
+        .item(&MenuItemBuilder::new("Play and Land X").id("locateAndLand").build(app)?)
         .item(&MenuItemBuilder::new("Preview Selection").id("previewSelection").build(app)?)
         .separator()
-        .item(&MenuItemBuilder::new("Scrub Back 1 Second").id("scrubBack1").accelerator("U").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Forward 1 Second").id("scrubForward1").accelerator("I").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Back 100 Milliseconds").id("scrubBack100ms").accelerator("Shift+U").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Forward 100 Milliseconds").id("scrubForward100ms").accelerator("Shift+I").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Back 10 Milliseconds").id("scrubBack10ms").accelerator("Ctrl+Shift+U").build(app)?)
-        .item(&MenuItemBuilder::new("Scrub Forward 10 Milliseconds").id("scrubForward10ms").accelerator("Ctrl+Shift+I").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 1 Second U").id("scrubBack1").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 1 Second I").id("scrubForward1").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 100 Milliseconds Shift+U").id("scrubBack100ms").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 100 Milliseconds Shift+I").id("scrubForward100ms").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Back 10 Milliseconds Ctrl+Shift+U").id("scrubBack10ms").build(app)?)
+        .item(&MenuItemBuilder::new("Scrub Forward 10 Milliseconds Ctrl+Shift+I").id("scrubForward10ms").build(app)?)
         .build()?;
 
     let navigate = SubmenuBuilder::new(app, "Navigate")
@@ -1396,9 +1396,12 @@ fn handle_menu_event(window: &tauri::WebviewWindow, event: &tauri::menu::MenuEve
             let _ = window.emit("menu-action", "makePrimaryEditor");
         }
         "goToPrimaryEditor" => {
-            if !focus_primary_editor_window(app) {
-                let _ = window.emit("menu-action-unavailable", "goToPrimaryEditor");
-            }
+            // Route through the source window's JS instead of changing
+            // focus from inside the native menu callback. Windows may
+            // restore focus to the menu owner as the menu dismisses;
+            // the JS path runs after that callback and invokes the same
+            // authoritative Rust focus command.
+            let _ = window.emit("menu-action", "goToPrimaryEditor");
         }
         _ => {
             let _ = window.emit("menu-action", id);

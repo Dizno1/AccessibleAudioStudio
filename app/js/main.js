@@ -94,6 +94,7 @@ async function init() {
   initAnnouncer();
   initShortcutService();
   registerShortcutActions();
+  bindNativeMenuEvents();
   bindStaticEventListeners();
   populateProfileSelect();
   initShortcutDiagnosticsPanel();
@@ -554,7 +555,45 @@ function bindStaticEventListeners() {
   });
 }
 
+async function goToPrimaryEditor() {
+  if (typeof window === "undefined" || !window.__TAURI__) return false;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await window.__TAURI__.core.invoke("focus_primary_editor");
+    return true;
+  } catch (_) {
+    announceAlert("No Primary Editor is currently available.");
+    return false;
+  }
+}
+
+function bindNativeMenuEvents() {
+  if (typeof window === "undefined" || !window.__TAURI__) return;
+  const { listen } = window.__TAURI__.event;
+  listen("menu-action", async (event) => {
+    if (event.payload === "goToPrimaryEditor") {
+      await goToPrimaryEditor();
+      return;
+    }
+    if (event.payload === "showKeyboardShortcuts" || event.payload === "showOpenAudioDiagnostics") {
+      const wantedSummary = event.payload === "showKeyboardShortcuts" ? "Keyboard Shortcuts" : "Open Audio Diagnostics";
+      const details = Array.from(document.querySelectorAll("footer details")).find((d) =>
+        d.querySelector("summary")?.textContent.startsWith(wantedSummary)
+      );
+      if (details) {
+        details.open = true;
+        details.querySelector("summary")?.focus();
+      }
+    }
+  });
+}
+
 function registerShortcutActions() {
+  registerAction("goToPrimaryEditor", () => {
+    goToPrimaryEditor();
+    return { executed: true, resultText: "Go to Primary Editor" };
+  });
+
   // Ctrl+Alt+R toggles like the record button on a physical recorder:
   // not recording -> start; recording or paused -> stop. There is no
   // separate stop shortcut.
