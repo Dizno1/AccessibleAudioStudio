@@ -970,9 +970,11 @@ fn open_editor_window_for_path(
     if let Ok(menu) = build_editor_menu(app) {
         let _ = window.set_menu(menu);
     }
-    let window_clone = window.clone();
-    window.on_menu_event(move |_window, event| {
-        handle_menu_event(&window_clone, &event);
+    window.on_menu_event(move |event_window, event| {
+        // Use the window Tauri reports for this exact menu activation.
+        // Capturing the window created above can misroute app-wide menu
+        // events when several editor windows are open.
+        handle_menu_event(event_window, &event);
     });
 
     Ok(())
@@ -1062,9 +1064,11 @@ async fn open_new_editor_window(
     if let Ok(menu) = build_editor_menu(&app) {
         let _ = window.set_menu(menu);
     }
-    let window_clone = window.clone();
-    window.on_menu_event(move |_window, event| {
-        handle_menu_event(&window_clone, &event);
+    window.on_menu_event(move |event_window, event| {
+        // Use the window Tauri reports for this exact menu activation.
+        // Capturing the window created above can misroute app-wide menu
+        // events when several editor windows are open.
+        handle_menu_event(event_window, &event);
     });
 
     Ok(())
@@ -1270,6 +1274,28 @@ fn set_current_editor_primary(window: tauri::WebviewWindow, app: tauri::AppHandl
 }
 
 #[tauri::command]
+fn clear_primary_editor_if_current(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    let closing_label = window.label().to_string();
+    if primary_editor_label(&app).as_deref() != Some(closing_label.as_str()) {
+        return Ok(());
+    }
+
+    if let Some(state) = app.try_state::<PrimaryEditorState>() {
+        let mut guard = state.0.lock().map_err(|_| "Could not update Primary Editor state.".to_string())?;
+        *guard = None;
+    } else {
+        return Err("Primary Editor state is unavailable.".to_string());
+    }
+
+    for (label, editor) in app.webview_windows() {
+        if label.starts_with("editor-") && label != closing_label {
+            let _ = editor.emit("primary-editor-state-changed", Option::<String>::None);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn focus_primary_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     if focus_primary_editor_window(&app) {
         Ok(())
@@ -1444,6 +1470,7 @@ fn main() {
             get_shared_audio_clipboard,
             get_primary_editor_info,
             set_current_editor_primary,
+            clear_primary_editor_if_current,
             focus_primary_editor,
         ])
         .run(tauri::generate_context!())

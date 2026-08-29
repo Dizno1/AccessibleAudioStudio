@@ -32,6 +32,8 @@ let el = {};
 const player = new BufferPlayer();
 let activeDoc = null;
 let isPrimaryEditor = false;
+let allowWindowClose = false;
+let pendingPrimaryResolve = null;
 
 function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
@@ -196,6 +198,17 @@ function cacheElements() {
     confirmSaveAsButton: document.getElementById("confirm-save-as-button"),
     cancelSaveAsButton: document.getElementById("cancel-save-as-button"),
 
+    unsavedCloseDialog: document.getElementById("unsaved-close-dialog"),
+    unsavedCloseMessage: document.getElementById("unsaved-close-message"),
+    closeSaveButton: document.getElementById("close-save-button"),
+    closeDiscardButton: document.getElementById("close-discard-button"),
+    closeCancelButton: document.getElementById("close-cancel-button"),
+
+    primaryEditorDialog: document.getElementById("primary-editor-dialog"),
+    primaryEditorDialogMessage: document.getElementById("primary-editor-dialog-message"),
+    confirmPrimaryEditorButton: document.getElementById("confirm-primary-editor-button"),
+    cancelPrimaryEditorButton: document.getElementById("cancel-primary-editor-button"),
+
     diagnosticsLastShortcut: document.getElementById("diagnostics-last-shortcut"),
   };
 }
@@ -224,6 +237,23 @@ function bindEvents() {
 
   el.confirmSaveAsButton.addEventListener("click", handleConfirmSaveAs);
   el.cancelSaveAsButton.addEventListener("click", closeSaveAsForm);
+
+  el.closeSaveButton.addEventListener("click", handleCloseWithSave);
+  el.closeDiscardButton.addEventListener("click", () => closeEditorAfterDecision(false));
+  el.closeCancelButton.addEventListener("click", cancelUnsavedClose);
+  el.unsavedCloseDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    cancelUnsavedClose();
+  });
+
+  el.confirmPrimaryEditorButton.addEventListener("click", () => finishPrimaryConfirmation(true));
+  el.cancelPrimaryEditorButton.addEventListener("click", () => finishPrimaryConfirmation(false));
+  el.primaryEditorDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    finishPrimaryConfirmation(false);
+  });
+
+  bindWindowCloseProtection();
 }
 
 /**
@@ -302,13 +332,80 @@ async function requestMakePrimaryEditor() {
       .replace(" - Primary Editor - AccessibleAudioStudio Pro", "")
       .replace(" - AccessibleAudioStudio Pro", "");
     const proposedName = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
-    const confirmed = window.confirm(
-      `Make ${proposedName} the Primary Editor instead of ${currentName}?`
-    );
+    const confirmed = await confirmPrimaryReassignment(proposedName, currentName);
     if (!confirmed) return;
   }
 
   await invoke("set_current_editor_primary");
+  // Do not wait for a cross-window event to make this editor reflect the
+  // authoritative result. The command was invoked by this exact window.
+  isPrimaryEditor = true;
+  await updateWindowTitle();
+}
+
+function confirmPrimaryReassignment(proposedName, currentName) {
+  if (!el.primaryEditorDialog) return Promise.resolve(false);
+  el.primaryEditorDialogMessage.textContent =
+    `Make ${proposedName} the Primary Editor instead of ${currentName}?`;
+  el.primaryEditorDialog.showModal();
+  el.confirmPrimaryEditorButton.focus();
+  return new Promise((resolve) => {
+    pendingPrimaryResolve = resolve;
+  });
+}
+
+function finishPrimaryConfirmation(confirmed) {
+  if (!el.primaryEditorDialog?.open) return;
+  el.primaryEditorDialog.close();
+  const resolve = pendingPrimaryResolve;
+  pendingPrimaryResolve = null;
+  if (resolve) resolve(confirmed);
+}
+
+async function bindWindowCloseProtection() {
+  if (!isRunningInTauri()) return;
+  const currentWindow = window.__TAURI__.window.getCurrentWindow();
+  await currentWindow.onCloseRequested((event) => {
+    if (allowWindowClose) return;
+    if (!activeDoc || !activeDoc.dirty) {
+      // Even a clean Primary must release the shared role before closing.
+      event.preventDefault();
+      closeEditorAfterDecision(false);
+      return;
+    }
+    event.preventDefault();
+    const name = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
+    el.unsavedCloseMessage.textContent = `${name} has unsaved changes. Save before closing?`;
+    if (!el.unsavedCloseDialog.open) el.unsavedCloseDialog.showModal();
+    el.closeSaveButton.focus();
+  });
+}
+
+function cancelUnsavedClose() {
+  if (el.unsavedCloseDialog?.open) el.unsavedCloseDialog.close();
+  announceStatus("Close canceled. Your changes are still open.");
+}
+
+async function handleCloseWithSave() {
+  if (!activeDoc) return;
+  const saved = await handleSave();
+  if (!saved || activeDoc.dirty) {
+    announceAlert("The document was not closed because it was not saved.");
+    return;
+  }
+  await closeEditorAfterDecision(true);
+}
+
+async function closeEditorAfterDecision(_saved) {
+  if (!isRunningInTauri()) return;
+  if (el.unsavedCloseDialog?.open) el.unsavedCloseDialog.close();
+  try {
+    await window.__TAURI__.core.invoke("clear_primary_editor_if_current");
+  } catch (_) {
+    // Closing a non-Primary editor does not require shared state to change.
+  }
+  allowWindowClose = true;
+  await window.__TAURI__.window.getCurrentWindow().close();
 }
 
 async function goToPrimaryEditor() {
@@ -1042,11 +1139,11 @@ function refreshAfterEdit() {
 // ---------------------------------------------------------------------
 
 async function handleSave() {
-  if (!activeDoc) return;
+  if (!activeDoc) return false;
   const canKeepFormat = activeDoc.sourceExtension === "mp3" || activeDoc.sourceExtension === "wav";
   const format = canKeepFormat ? activeDoc.sourceExtension : "wav";
   const name = (activeDoc.baseName ? stripExtension(activeDoc.baseName) : "Untitled Audio") + "." + format;
-  await saveAs(name, format, {
+  return await saveAs(name, format, {
     formatSubstituted: !canKeepFormat,
     originalExtension: activeDoc.sourceExtension,
   });
@@ -1092,11 +1189,13 @@ async function saveAs(filename, format, { formatSubstituted = false, originalExt
         ? `Audio saved as ${format.toUpperCase()}. AccessibleAudioStudio Pro cannot write .${originalExtension} files, so it saved as ${format.toUpperCase()} instead.`
         : "Audio saved."
     );
+    return true;
   } catch (err) {
     announceAlert(
       `Save failed. ${err && err.message ? err.message : "The audio could not be encoded."} ` +
         "Try saving as WAV instead."
     );
+    return false;
   }
 }
 

@@ -93,6 +93,25 @@
     </section>
 
     <section class="panel">
+      <dialog id="unsaved-close-dialog" aria-labelledby="unsaved-close-heading" aria-describedby="unsaved-close-message">
+        <h3 id="unsaved-close-heading">Unsaved changes</h3>
+        <p id="unsaved-close-message">This audio document has unsaved changes. Save before closing?</p>
+        <div class="button-row">
+          <button type="button" id="close-save-button">Save</button>
+          <button type="button" id="close-discard-button">Don't Save</button>
+          <button type="button" id="close-cancel-button">Cancel</button>
+        </div>
+      </dialog>
+
+      <dialog id="primary-editor-dialog" aria-labelledby="primary-editor-dialog-heading" aria-describedby="primary-editor-dialog-message">
+        <h3 id="primary-editor-dialog-heading">Change Primary Editor</h3>
+        <p id="primary-editor-dialog-message"></p>
+        <div class="button-row">
+          <button type="button" id="confirm-primary-editor-button">Make Primary</button>
+          <button type="button" id="cancel-primary-editor-button">Cancel</button>
+        </div>
+      </dialog>
+
       <div id="save-as-form" hidden class="save-panel">
         <h3 id="save-as-heading">Save Audio As</h3>
         <label for="save-as-name-input">File name</label>
