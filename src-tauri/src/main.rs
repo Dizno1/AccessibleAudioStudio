@@ -974,7 +974,7 @@ fn open_editor_window_for_path(
         // Use the window Tauri reports for this exact menu activation.
         // Capturing the window created above can misroute app-wide menu
         // events when several editor windows are open.
-        handle_menu_event(event_window, &event);
+        handle_menu_event(event_window, event);
     });
 
     Ok(())
@@ -1068,7 +1068,7 @@ async fn open_new_editor_window(
         // Use the window Tauri reports for this exact menu activation.
         // Capturing the window created above can misroute app-wide menu
         // events when several editor windows are open.
-        handle_menu_event(event_window, &event);
+        handle_menu_event(event_window, event);
     });
 
     Ok(())
@@ -1405,7 +1405,7 @@ fn build_editor_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> 
 /// forwarded to the clicking window's own JavaScript, which already
 /// knows how to run that action via the same dispatch path a keyboard
 /// shortcut uses.
-fn handle_menu_event(window: &tauri::WebviewWindow, event: &tauri::menu::MenuEvent) {
+fn handle_menu_event(window: &tauri::WebviewWindow, event: tauri::menu::MenuEvent) {
     let id = event.id().0.as_str();
     let app = window.app_handle();
 
@@ -1457,7 +1457,7 @@ fn main() {
                 }
                 let main_window_clone = main_window.clone();
                 main_window.on_menu_event(move |_window, event| {
-                    handle_menu_event(&main_window_clone, &event);
+                    handle_menu_event(&main_window_clone, event);
                 });
             }
             Ok(())
