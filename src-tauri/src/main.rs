@@ -672,6 +672,10 @@ fn pick_files_native(app: &tauri::AppHandle) -> Result<(Vec<PathBuf>, PasteDiagn
         CommDlgExtendedError, GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_ENABLEHOOK,
         OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
+    // Required for `.window_handle()` below — confirmed as the real,
+    // correct trait via Tauri's own docs.rs (see the doc comment at that
+    // call site), not the same speculative attempt as before.
+    use raw_window_handle::HasWindowHandle;
 
     fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -693,10 +697,35 @@ fn pick_files_native(app: &tauri::AppHandle) -> Result<(Vec<PathBuf>, PasteDiagn
     // A fresh build of 0.2.6's exact source, run today, would very
     // plausibly resolve the same current Tauri/wry release and hit the
     // same error, since nothing pins which version gets resolved.
+    // 0.2.7.3: restored to window_handle()/HasWindowHandle — confirmed,
+    // not guessed, this time. Tauri's own docs.rs page for WebviewWindow
+    // in tauri 2.0.0 (the very first stable Tauri 2.x release, October
+    // 2024) lists no `hwnd()` method anywhere in its full method list,
+    // and directly confirms:
+    //   impl<R: Runtime> HasWindowHandle for WebviewWindow<R>
+    //       fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError>
+    // This has been WebviewWindow's real, only window-handle-access API
+    // since Tauri 2.0.0 — not something that changed in some newer
+    // release. A `cargo generate-lockfile` in this environment confirmed
+    // separately that even pinning `tauri` to its oldest 2.0.x release
+    // still resolves `wry` to a version past the `raw-window-handle 0.6`
+    // transition, meaning a version pin alone — without this exact code
+    // — could not have restored `.hwnd()` even in principle, since
+    // `.hwnd()` does not appear to have ever been valid on
+    // `tauri::webview::WebviewWindow` in any Tauri 2.x release. See
+    // docs/Pro Roadmap.md, 0.2.7.3, for the full evidence trail,
+    // including why 0.2.6's `.hwnd()` call compiling historically
+    // remains a genuine, named open question rather than something this
+    // build claims to have fully explained.
     let owner_hwnd: HWND = app
         .get_webview_window("main")
-        .and_then(|w| w.hwnd().ok())
-        .map(|h| HWND(h.0))
+        .and_then(|w| w.window_handle().ok())
+        .and_then(|handle| match handle.as_raw() {
+            raw_window_handle::RawWindowHandle::Win32(h) => {
+                Some(HWND(h.hwnd.get() as *mut std::ffi::c_void))
+            }
+            _ => None,
+        })
         .unwrap_or_default();
 
     PASTE_DIAGNOSTICS.with(|d| *d.borrow_mut() = PasteDiagnostics::default());

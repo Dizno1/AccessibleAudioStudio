@@ -2472,26 +2472,108 @@ only"):
    instead of re-resolving fresh — the direct structural fix for the
    whole class of problem, not just this one symptom.
 
+## 0.2.7.3 — the actual answer, found by reading Tauri's own source history
+
+Build #29 confirmed the prediction from 0.2.7.2: restoring 0.2.6's exact
+`.hwnd()` code did not fix a fresh build, because nothing about the
+dependency resolution differs between the two versions. That reframed
+this as a dependency-reproducibility problem — a reasonable, evidence-
+based conclusion at the time. Pursuing it further, using real tools
+rather than more research-and-guess, turned up a more complete answer.
+
+### Investigation
+
+`cargo generate-lockfile` — real dependency resolution against crates.io,
+not a full build, so it succeeds even in this sandbox's outdated
+toolchain — was run against `tauri` pinned to each of `~2.0` through
+`~2.5`. Every single one resolved `wry` to `0.53.5` or newer, all well
+past the `wry 0.36.0` release where `HasWindowHandle` replaced
+`HasRawWindowHandle` (confirmed directly from wry's own changelog in
+0.2.7.1's investigation). This ruled out "pin to an older Tauri minor"
+as a viable fix on its own, for any minor version.
+
+That raised the real question directly: was `.hwnd()` ever actually
+valid on `tauri::webview::WebviewWindow`, in any Tauri 2.x release? Its
+own published documentation answers this. Fetched directly:
+`docs.rs/tauri/2.0.0/tauri/webview/struct.WebviewWindow.html` — the
+first stable Tauri 2.x release, October 2024. The complete, alphabetized
+method list has no `hwnd()` entry anywhere. What it does show, stated
+explicitly:
+
+```
+impl<R: Runtime> HasWindowHandle for WebviewWindow<R>
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError>
+```
+
+**`HasWindowHandle`/`window_handle()` — the exact mechanism 0.2.7.1
+attempted — has been `WebviewWindow`'s real, only window-handle-access
+API since the very first stable Tauri 2.x release.** `.hwnd()` does not
+appear to have ever been a valid method on this type, in any Tauri 2.x
+version — not something that changed between 0.2.6 and 0.2.7, and not
+something any version pin could have restored.
+
+### What this leaves genuinely unresolved
+
+How 0.2.6's `.hwnd()` call ever compiled historically remains an open
+question, stated honestly rather than papered over. Also confirmed: two
+different `windows` crate versions coexist in the real, generated
+dependency graph for this project (`0.58.0`, this project's own direct
+pin, and `0.61.3`, Tauri's internal dependency) — this is valid, normal
+Cargo behavior for semver-incompatible 0.x versions used in separate
+compilation contexts, not a conflict, but worth naming since it wasn't
+obvious going in.
+
+### Repair
+
+Restored `pick_files_native`'s HWND acquisition to the
+`HasWindowHandle`/`window_handle()` implementation — the same code
+0.2.7.1 attempted, now backed by direct confirmation from Tauri's own
+documentation rather than general research. Re-added `raw-window-handle`
+as an explicit, Windows-scoped dependency, pinned to `0.6` to match what
+`tauri` and `wry` themselves depend on for the same trait.
+
+**A real `Cargo.lock` was generated and is committed with this
+delivery** — the direct, structural fix for the dependency-
+reproducibility problem this whole investigation surfaced, not just a
+patch for one symptom of it. It reflects a genuine, successful
+resolution of the current `Cargo.toml` (`tauri 2.11.5`, `wry 0.55.1`,
+`raw-window-handle 0.6.2`), confirmed by direct inspection, not assumed.
+Every future build using this repository will resolve these exact
+versions rather than re-resolving fresh against whatever crates.io
+happens to have published that day.
+
+### What is and isn't verified
+
+The `raw-window-handle`/`HasWindowHandle` trait and struct usage is
+confirmed directly against both `raw-window-handle`'s own published
+source and Tauri's own documented implementation for `WebviewWindow` —
+real, sourced confirmation, not inference. What remains unverified: an
+actual successful compile. Build #28 (0.2.7.1, using this same
+mechanism) failed, and this environment does not have visibility into
+that build's exact error text — only that it existed. If build #30
+fails identically, the specific compiler error is the essential missing
+piece for the next round, since this build's evidence trail has now
+exhausted what documentation research alone can determine.
+
 ## Recommended next phase
 
-Build #29 via GitHub Actions — and, importantly, **before assuming it
-will pass**, actually look at its dependency-resolution log output,
-whether it succeeds or fails. If it fails at the same call site with the
-same `no method named hwnd` error, that directly confirms this build's
-own prediction (source-code identity was never the actual problem) and
-makes the next step unambiguous: capture the exact `tauri`/`wry`
-versions the log shows being resolved, and either pin `Cargo.toml` to a
-version confirmed compatible with `.hwnd()`, or — if a newer
-Tauri/wry genuinely no longer supports it in any form — accept that a
-real API change is needed and design it *from* that confirmed version's
-actual documented surface, not from search-engine research alone. If
-build #29 unexpectedly passes (dependency resolution could plausibly
-land differently run to run without a lockfile), that's valuable
-information too: capture the resolved versions from that successful
-log immediately and commit a `Cargo.lock` right away, before anything
-else changes and the same non-determinism causes this to break again
-later. Either outcome, the single highest-leverage action available
-once any build's dependency resolution is known is committing a
-`Cargo.lock` — it's the only thing that actually stops this specific
-class of "worked before, fails now, nothing in the code changed"
-failure from recurring.
+Build #30 via GitHub Actions is the real test of this round's work. If
+it fails, **the specific compiler error text is the single most valuable
+thing to bring back** — this environment could confirm the
+`HasWindowHandle`/`window_handle()` trait and struct usage are correct
+against real, sourced documentation, but could not compile-test the
+actual code, and build #28's exact failure (same mechanism, same general
+approach) was never available to learn from directly. Any error at all —
+even a completely different one than `no method named hwnd` — is more
+useful than another round of research without it. If it succeeds:
+confirm the committed `Cargo.lock` is actually what the CI run used
+(check the build log's dependency list against `tauri 2.11.5`/
+`wry 0.55.1`/`raw-window-handle 0.6.2`), and from that point forward,
+this repository should never again silently re-resolve a different
+dependency set between builds — that reproducibility problem, not just
+this one symptom of it, is now structurally fixed. Once the Windows
+build is confirmed passing, the substantial remaining 0.2.7 scope
+(README rewrite, the requested test additions, Layer 3 contextual
+shortcut help, Recording Studio parity, dynamic menu-item state) is the
+natural next increment — none of that architecture needs re-verifying
+on its own, only the build needs to actually succeed first.

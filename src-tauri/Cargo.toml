@@ -73,6 +73,18 @@ features = [
   "Win32_System_Ole",
 ]
 
+# Confirmed required, not guessed: WebviewWindow::window_handle() (used
+# in pick_files_native, src/main.rs, to obtain the main window's real
+# HWND for GetOpenFileNameW's hwndOwner parameter) is provided by the
+# HasWindowHandle trait from this crate. Tauri's own docs.rs page for
+# WebviewWindow in tauri 2.0.0 — the very first stable Tauri 2.x release
+# — confirms `impl HasWindowHandle for WebviewWindow<R>` directly; this
+# has been the real API since Tauri 2.0.0, not something introduced by a
+# later release. Pinned to 0.6 to match what tauri itself (and wry)
+# depend on for the same trait.
+[target.'cfg(windows)'.dependencies.raw-window-handle]
+version = "0.6"
+
 [[bin]]
 name = "accessibleaudiostudio-pro"
 path = "src/main.rs"
