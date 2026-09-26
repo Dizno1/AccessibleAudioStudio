@@ -32,7 +32,6 @@ let el = {};
 const player = new BufferPlayer();
 let activeDoc = null;
 let isPrimaryEditor = false;
-let allowWindowClose = false;
 let pendingPrimaryResolve = null;
 
 function isRunningInTauri() {
@@ -376,7 +375,6 @@ async function bindWindowCloseProtection() {
   if (!isRunningInTauri()) return;
   const currentWindow = window.__TAURI__.window.getCurrentWindow();
   await currentWindow.onCloseRequested((event) => {
-    if (allowWindowClose) return;
     if (!activeDoc || !activeDoc.dirty) {
       // Even a clean Primary must release the shared role before closing.
       event.preventDefault();
@@ -410,16 +408,17 @@ async function closeEditorAfterDecision(_saved) {
   if (!isRunningInTauri()) return;
   if (el.unsavedCloseDialog?.open) el.unsavedCloseDialog.close();
   try {
-    await window.__TAURI__.core.invoke("clear_primary_editor_if_current");
-  } catch (_) {
-    // Closing a non-Primary editor does not require shared state to change.
+    // The native Rust command destroys the exact editor window that invoked it.
+    // Do not call the frontend Window.close()/destroy() APIs here: this function
+    // is reached from the close-request listener itself, and routing the approved
+    // close back through that bridge is the failure mode that previously left
+    // editor windows alive until the application was terminated.
+    await window.__TAURI__.core.invoke("close_current_editor");
+  } catch (err) {
+    announceAlert(
+      "The editor could not be closed. " + (err && err.message ? err.message : String(err))
+    );
   }
-  // Tauri's JS close-request bridge owns/intercepts closeRequested while a
-  // listener is registered. At this point the user has already made the
-  // close decision, so bypass that interception entirely. `destroy()` is
-  // Tauri's documented forced-close path and does not emit closeRequested.
-  allowWindowClose = true;
-  await window.__TAURI__.window.getCurrentWindow().destroy();
 }
 
 async function goToPrimaryEditor() {

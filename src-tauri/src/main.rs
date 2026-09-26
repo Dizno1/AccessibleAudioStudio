@@ -1262,6 +1262,31 @@ fn set_current_editor_primary(window: tauri::WebviewWindow, app: tauri::AppHandl
 }
 
 #[tauri::command]
+fn close_current_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    let closing_label = window.label().to_string();
+
+    // Window destruction is deliberately owned by Rust. The frontend close-request
+    // listener may prevent the native close while it asks about unsaved changes;
+    // once the user has approved closing, coming back through the frontend Window
+    // API risks re-entering that same bridge. Destroying the exact invoking
+    // WebviewWindow here bypasses the JS close-request path entirely.
+    if primary_editor_label(&app).as_deref() == Some(closing_label.as_str()) {
+        if let Some(state) = app.try_state::<PrimaryEditorState>() {
+            let mut guard = state.0.lock().map_err(|_| "Could not update Primary Editor state.".to_string())?;
+            *guard = None;
+        }
+
+        for (label, editor) in app.webview_windows() {
+            if label.starts_with("editor-") && label != closing_label {
+                let _ = editor.emit("primary-editor-state-changed", Option::<String>::None);
+            }
+        }
+    }
+
+    window.destroy().map_err(|e| format!("Could not close editor window: {e}"))
+}
+
+#[tauri::command]
 fn clear_primary_editor_if_current(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     let closing_label = window.label().to_string();
     if primary_editor_label(&app).as_deref() != Some(closing_label.as_str()) {
@@ -1443,6 +1468,7 @@ fn main() {
             get_primary_editor_info,
             set_current_editor_primary,
             clear_primary_editor_if_current,
+            close_current_editor,
             focus_primary_editor,
         ])
         .run(tauri::generate_context!())
