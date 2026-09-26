@@ -50,6 +50,18 @@ export const SHORTCUTS = [
     label: "Ctrl+Alt+G",
     description: "Go to Primary Editor",
   },
+  {
+    action: "nextEditorLocation",
+    combo: { ctrl: true, key: "pagedown" },
+    label: "Ctrl+Page Down",
+    description: "Move to the next major editor location",
+  },
+  {
+    action: "previousEditorLocation",
+    combo: { ctrl: true, key: "pageup" },
+    label: "Ctrl+Page Up",
+    description: "Move to the previous major editor location",
+  },
 
   // Audio Editor (Pro) — ordinary Windows document/editing conventions,
   // per the Pro roadmap's Keyboard Philosophy: reuse familiar shortcuts

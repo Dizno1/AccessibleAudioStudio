@@ -435,7 +435,55 @@ async function goToPrimaryEditor() {
   }
 }
 
+// Major VC-off work locations. Keep this registry small and functional: Ctrl+Page
+// Up/Down jumps between work areas, while Tab/Shift+Tab moves among controls
+// inside the current area. Future editor features (for example level monitors)
+// join this registry instead of inventing another navigation scheme.
+const EDITOR_LOCATIONS = [
+  {
+    name: "Timeline",
+    getTarget: () => el.playheadSlider,
+    containsFocus: () => document.activeElement === el.playheadSlider,
+  },
+  {
+    name: "Marks and Selection",
+    getTarget: () => el.setSelectionStartButton,
+    containsFocus: () => [el.setSelectionStartButton, el.setSelectionEndButton].includes(document.activeElement),
+  },
+  {
+    name: "Playback",
+    getTarget: () => el.auditionButton,
+    containsFocus: () => [el.auditionButton, el.editorPlayPauseButton, el.editorPreviewButton].includes(document.activeElement),
+  },
+];
+
+function moveEditorLocation(direction) {
+  const available = EDITOR_LOCATIONS.filter((location) => {
+    const target = location.getTarget();
+    return target && !target.disabled && !target.hidden;
+  });
+  if (!available.length) return false;
+
+  const currentIndex = available.findIndex((location) => location.containsFocus());
+  const base = currentIndex >= 0 ? currentIndex : (direction > 0 ? -1 : 0);
+  const nextIndex = (base + direction + available.length) % available.length;
+  const location = available[nextIndex];
+  const target = location.getTarget();
+  target.focus();
+  announceStatus(`${location.name}.`);
+  return true;
+}
+
 function registerShortcutActions() {
+  registerAction("nextEditorLocation", () => ({
+    executed: moveEditorLocation(1),
+    resultText: "Next editor location",
+  }));
+  registerAction("previousEditorLocation", () => ({
+    executed: moveEditorLocation(-1),
+    resultText: "Previous editor location",
+  }));
+
   registerAction("copySelection", () => {
     if (!activeDoc || !activeDoc.hasSelection()) return { executed: false, reason: "There is no selection to copy." };
     handleCopy();
@@ -689,11 +737,17 @@ function bindPlayheadSlider() {
         break;
       case "Home":
         event.preventDefault();
+        activeDoc.clearSelection();
+        updateSelectionDisplay();
         setPlayhead(0);
+        announceStatus(`Beginning. ${formatTimePrecise(activeDoc.cursorSec)}. Selection cleared.`);
         break;
       case "End":
         event.preventDefault();
+        activeDoc.clearSelection();
+        updateSelectionDisplay();
         setPlayhead(activeDoc.durationSec);
+        announceStatus(`End. ${formatTimePrecise(activeDoc.cursorSec)}. Selection cleared.`);
         break;
       default:
         break; // native default handling (Up/Down/PageUp/PageDown/etc.)
@@ -1179,6 +1233,16 @@ function refreshAfterEdit() {
 
 async function handleSave() {
   if (!activeDoc) return false;
+
+  // A new document has never been given a user-chosen destination. Ctrl+S
+  // therefore behaves like the first Save in a conventional desktop editor:
+  // open Save As and let the user name it. Once that succeeds, later Ctrl+S
+  // can save directly using the established name/format.
+  if (activeDoc.isNew) {
+    openSaveAsForm();
+    return false;
+  }
+
   const canKeepFormat = activeDoc.sourceExtension === "mp3" || activeDoc.sourceExtension === "wav";
   const format = canKeepFormat ? activeDoc.sourceExtension : "wav";
   const name = (activeDoc.baseName ? stripExtension(activeDoc.baseName) : "Untitled Audio") + "." + format;
@@ -1219,6 +1283,7 @@ async function saveAs(filename, format, { formatSubstituted = false, originalExt
 
     activeDoc.baseName = filename;
     activeDoc.sourceExtension = format;
+    activeDoc.isNew = false;
     activeDoc.markSaved();
 
     updateWindowTitle();

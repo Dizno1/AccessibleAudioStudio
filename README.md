@@ -113,6 +113,9 @@ tests/                     Reserved for future automated tests
 | Ctrl+Alt+R | Start or Stop Recording (toggle, like the record button on a physical recorder) |
 | Ctrl+Alt+Space | Pause or Resume Recording |
 | Ctrl+Alt+P | Play or Pause the current unsaved recording, or the saved recording selected in the library if there is no unsaved recording |
+| Ctrl+Page Up / Ctrl+Page Down | In an Audio Editor window, move backward / forward through the major work locations: Timeline, Marks and Selection, and Playback |
+| Home / End | With focus on the Playhead slider, move to the beginning / end of the document and clear the current selection |
+| Ctrl+S | Save. On a new Untitled Audio document, the first Ctrl+S opens Save As so the user can name the file |
 
 Shortcuts are suspended while focus is in a text field (typing an input or textarea) — not while focus is on a dropdown like the microphone or profile selector, since there's no typing to protect there. Every visible button remains fully functional at all times -- shortcuts are a supplement, never a replacement.
 
