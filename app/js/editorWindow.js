@@ -33,6 +33,7 @@ const player = new BufferPlayer();
 let activeDoc = null;
 let isPrimaryEditor = false;
 let pendingPrimaryResolve = null;
+let applicationShutdownRequested = false;
 
 function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
@@ -236,6 +237,12 @@ function bindEvents() {
 
   el.confirmSaveAsButton.addEventListener("click", handleConfirmSaveAs);
   el.cancelSaveAsButton.addEventListener("click", closeSaveAsForm);
+  el.saveAsNameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      handleConfirmSaveAs();
+    }
+  });
 
   el.closeSaveButton.addEventListener("click", handleCloseWithSave);
   el.closeDiscardButton.addEventListener("click", () => closeEditorAfterDecision(false));
@@ -313,6 +320,22 @@ function bindMenuEvents() {
       announceStatus("This editor is now the Primary Editor.");
     }
   });
+
+  // Application shutdown is deliberately serialized. Rust asks one editor at
+  // a time to resolve its document; only after that editor closes does the
+  // next editor receive this event. This prevents a pile of simultaneous Save
+  // dialogs and gives Cancel the same meaning it has in desktop editors.
+  listen("application-close-requested", async () => {
+    applicationShutdownRequested = true;
+    if (!activeDoc || !activeDoc.dirty) {
+      await closeEditorAfterDecision(false);
+      return;
+    }
+    const name = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
+    el.unsavedCloseMessage.textContent = `${name} has unsaved changes. Save before closing AccessibleAudioStudio Pro?`;
+    if (!el.unsavedCloseDialog.open) el.unsavedCloseDialog.showModal();
+    el.closeSaveButton.focus();
+  });
 }
 
 async function requestMakePrimaryEditor() {
@@ -389,8 +412,12 @@ async function bindWindowCloseProtection() {
   });
 }
 
-function cancelUnsavedClose() {
+async function cancelUnsavedClose() {
   if (el.unsavedCloseDialog?.open) el.unsavedCloseDialog.close();
+  if (applicationShutdownRequested && isRunningInTauri()) {
+    applicationShutdownRequested = false;
+    try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+  }
   announceStatus("Close canceled. Your changes are still open.");
 }
 
@@ -1278,6 +1305,9 @@ function openSaveAsForm() {
   el.saveAsFormatSelect.value = activeDoc.sourceExtension === "mp3" ? "mp3" : "wav";
   el.saveAsForm.hidden = false;
   el.saveAsNameInput.focus();
+  // Desktop Save As convention: the proposed base name is selected so the
+  // first character typed replaces it instead of being appended to it.
+  el.saveAsNameInput.select();
 }
 
 function closeSaveAsForm() {
@@ -1313,6 +1343,9 @@ async function saveAs(filename, format, { formatSubstituted = false, originalExt
         ? `Audio saved as ${format.toUpperCase()}. AccessibleAudioStudio Pro cannot write .${originalExtension} files, so it saved as ${format.toUpperCase()} instead.`
         : "Audio saved."
     );
+    if (applicationShutdownRequested) {
+      await closeEditorAfterDecision(true);
+    }
     return true;
   } catch (err) {
     announceAlert(

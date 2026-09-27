@@ -18,6 +18,18 @@ export function initAudioEditorLauncher() {
   cacheElements();
   bindEvents();
   bindMenuEvents();
+  bindApplicationCloseProtection();
+}
+
+async function bindApplicationCloseProtection() {
+  if (!isRunningInTauri()) return;
+  const currentWindow = window.__TAURI__.window.getCurrentWindow();
+  await currentWindow.onCloseRequested((event) => {
+    event.preventDefault();
+    window.__TAURI__.core.invoke("begin_application_shutdown").catch((err) => {
+      announceAlert(`AccessibleAudioStudio Pro could not close. ${err && err.message ? err.message : String(err)}`);
+    });
+  });
 }
 
 /**

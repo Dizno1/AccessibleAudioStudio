@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::collections::VecDeque;
 
 use serde::Serialize;
 
@@ -1194,6 +1195,77 @@ use tauri::{Emitter, Manager};
 #[derive(Default)]
 struct PrimaryEditorState(Mutex<Option<String>>);
 
+#[derive(Default)]
+struct ApplicationShutdownState(Mutex<ApplicationShutdownInner>);
+
+#[derive(Default)]
+struct ApplicationShutdownInner {
+    active: bool,
+    remaining: VecDeque<String>,
+}
+
+fn continue_application_shutdown(app: &tauri::AppHandle) -> Result<(), String> {
+    let next_label = {
+        let state = app.try_state::<ApplicationShutdownState>()
+            .ok_or_else(|| "Application shutdown state is unavailable.".to_string())?;
+        let mut guard = state.0.lock().map_err(|_| "Could not update application shutdown state.".to_string())?;
+        if !guard.active {
+            return Ok(());
+        }
+        let mut next = None;
+        while let Some(label) = guard.remaining.pop_front() {
+            if app.get_webview_window(&label).is_some() {
+                next = Some(label);
+                break;
+            }
+        }
+        if next.is_none() {
+            guard.active = false;
+        }
+        next
+    };
+
+    if let Some(label) = next_label {
+        if let Some(editor) = app.get_webview_window(&label) {
+            editor.emit("application-close-requested", ())
+                .map_err(|e| format!("Could not request editor close: {e}"))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(main) = app.get_webview_window("main") {
+        main.destroy().map_err(|e| format!("Could not close AccessibleAudioStudio Pro: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn begin_application_shutdown(app: tauri::AppHandle) -> Result<(), String> {
+    let mut labels: Vec<String> = app.webview_windows().keys()
+        .filter(|label| label.starts_with("editor-"))
+        .cloned().collect();
+    labels.sort();
+    {
+        let state = app.try_state::<ApplicationShutdownState>()
+            .ok_or_else(|| "Application shutdown state is unavailable.".to_string())?;
+        let mut guard = state.0.lock().map_err(|_| "Could not update application shutdown state.".to_string())?;
+        if guard.active { return Ok(()); }
+        guard.active = true;
+        guard.remaining = labels.into_iter().collect();
+    }
+    continue_application_shutdown(&app)
+}
+
+#[tauri::command]
+fn cancel_application_shutdown(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.try_state::<ApplicationShutdownState>()
+        .ok_or_else(|| "Application shutdown state is unavailable.".to_string())?;
+    let mut guard = state.0.lock().map_err(|_| "Could not update application shutdown state.".to_string())?;
+    guard.active = false;
+    guard.remaining.clear();
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PrimaryEditorInfo {
@@ -1283,7 +1355,15 @@ fn close_current_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> 
         }
     }
 
-    window.destroy().map_err(|e| format!("Could not close editor window: {e}"))
+    window.destroy().map_err(|e| format!("Could not close editor window: {e}"))?;
+
+    let shutdown_active = app.try_state::<ApplicationShutdownState>()
+        .and_then(|state| state.0.lock().ok().map(|g| g.active))
+        .unwrap_or(false);
+    if shutdown_active {
+        continue_application_shutdown(&app)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1445,6 +1525,7 @@ fn main() {
         .manage(PendingEditorSources(Mutex::new(HashMap::new())))
         .manage(SharedAudioClipboard::default())
         .manage(PrimaryEditorState::default())
+        .manage(ApplicationShutdownState::default())
         .setup(|app| {
             let handle = app.handle();
             if let Some(main_window) = app.get_webview_window("main") {
@@ -1469,6 +1550,8 @@ fn main() {
             set_current_editor_primary,
             clear_primary_editor_if_current,
             close_current_editor,
+            begin_application_shutdown,
+            cancel_application_shutdown,
             focus_primary_editor,
         ])
         .run(tauri::generate_context!())
