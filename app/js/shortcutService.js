@@ -268,7 +268,7 @@ function matchesCombo(event, combo) {
   );
 }
 
-function handleKeydown(event) {
+async function handleKeydown(event) {
   const shortcut = SHORTCUTS.find((s) => matchesCombo(event, s.combo));
   if (!shortcut) return; // not one of our combos; nothing useful to log
 
@@ -297,7 +297,7 @@ function handleKeydown(event) {
   }
 
   event.preventDefault();
-  const result = handler() || {};
+  const result = (await handler()) || {};
   recordShortcutEvent({
     label: shortcut.label,
     description: shortcut.description,
@@ -348,7 +348,7 @@ export function initShortcutService() {
  * to any key), the raw action id is used as a fallback label so the
  * Keyboard Shortcut Diagnostics panel still reports something readable.
  */
-export function triggerAction(action) {
+export async function triggerAction(action) {
   const shortcut = SHORTCUTS.find((s) => s.action === action);
   const handler = actionHandlers.get(action);
 
@@ -362,7 +362,7 @@ export function triggerAction(action) {
     return;
   }
 
-  const result = handler() || {};
+  const result = (await handler()) || {};
   recordShortcutEvent({
     label: shortcut ? shortcut.label : action,
     description: shortcut ? shortcut.description : "(menu command)",

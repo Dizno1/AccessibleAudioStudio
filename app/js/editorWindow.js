@@ -293,7 +293,7 @@ function bindMenuEvents() {
       await goToPrimaryEditor();
       return;
     }
-    triggerAction(id);
+    await triggerAction(id);
   });
 
   listen("menu-action-unavailable", (event) => {
@@ -484,20 +484,20 @@ function registerShortcutActions() {
     resultText: "Previous editor location",
   }));
 
-  registerAction("copySelection", () => {
+  registerAction("copySelection", async () => {
     if (!activeDoc || !activeDoc.hasSelection()) return { executed: false, reason: "There is no selection to copy." };
-    handleCopy();
-    return { executed: true, resultText: "Copy" };
+    await handleCopy();
+    return { executed: true, resultText: "Copy completed" };
   });
-  registerAction("cutSelection", () => {
+  registerAction("cutSelection", async () => {
     if (!activeDoc || !activeDoc.hasSelection()) return { executed: false, reason: "There is no selection to cut." };
-    handleCut();
-    return { executed: true, resultText: "Cut" };
+    await handleCut();
+    return { executed: true, resultText: "Cut completed" };
   });
-  registerAction("pasteSelection", () => {
+  registerAction("pasteSelection", async () => {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
-    handlePaste();
-    return { executed: true, resultText: "Paste" };
+    await handlePaste();
+    return { executed: true, resultText: "Paste completed" };
   });
   registerAction("undoEdit", () => {
     if (!activeDoc || !activeDoc.canUndo()) return { executed: false, reason: "Nothing to undo." };
@@ -737,17 +737,35 @@ function bindPlayheadSlider() {
         break;
       case "Home":
         event.preventDefault();
-        activeDoc.clearSelection();
-        updateSelectionDisplay();
-        setPlayhead(0);
-        announceStatus(`Beginning. ${formatTimePrecise(activeDoc.cursorSec)}. Selection cleared.`);
+        if (event.shiftKey) {
+          const anchor = activeDoc.cursorSec;
+          activeDoc.selection = { startSec: 0, endSec: anchor };
+          setPlayhead(0);
+          updateSelectionDisplay();
+          drawTimeline();
+          announceStatus(`Selected from beginning to ${formatTimePrecise(anchor)}.`);
+        } else {
+          activeDoc.clearSelection();
+          updateSelectionDisplay();
+          setPlayhead(0);
+          announceStatus(`Beginning. ${formatTimePrecise(activeDoc.cursorSec)}. Selection cleared.`);
+        }
         break;
       case "End":
         event.preventDefault();
-        activeDoc.clearSelection();
-        updateSelectionDisplay();
-        setPlayhead(activeDoc.durationSec);
-        announceStatus(`End. ${formatTimePrecise(activeDoc.cursorSec)}. Selection cleared.`);
+        if (event.shiftKey) {
+          const anchor = activeDoc.cursorSec;
+          activeDoc.selection = { startSec: anchor, endSec: activeDoc.durationSec };
+          setPlayhead(activeDoc.durationSec);
+          updateSelectionDisplay();
+          drawTimeline();
+          announceStatus(`Selected from ${formatTimePrecise(anchor)} to end.`);
+        } else {
+          activeDoc.clearSelection();
+          updateSelectionDisplay();
+          setPlayhead(activeDoc.durationSec);
+          announceStatus(`End. ${formatTimePrecise(activeDoc.cursorSec)}. Selection cleared.`);
+        }
         break;
       default:
         break; // native default handling (Up/Down/PageUp/PageDown/etc.)
@@ -1031,7 +1049,9 @@ function handleAuditionPlayback() {
     stopActivePlayback({ landPlayhead: false });
   }
 
-  player.play(activeDoc.buffer, activeDoc.cursorSec, activeDoc.durationSec);
+  const auditionStart = activeDoc.hasSelection() ? activeDoc.selection.startSec : activeDoc.cursorSec;
+  const auditionEnd = activeDoc.hasSelection() ? activeDoc.selection.endSec : activeDoc.durationSec;
+  player.play(activeDoc.buffer, auditionStart, auditionEnd);
   playbackMode = "audition";
   updateTransportButtonLabels();
   startPlaybackTicker();
