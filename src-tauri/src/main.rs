@@ -1255,6 +1255,15 @@ fn continue_application_shutdown(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn focus_current_editor(window: tauri::WebviewWindow) -> Result<(), String> {
+    // A shutdown prompt belongs to this editor, so make the native window
+    // visible and foreground before its web dialog receives keyboard focus.
+    let _ = window.show();
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| format!("Could not focus editor: {e}"))
+}
+
+#[tauri::command]
 fn begin_application_shutdown(app: tauri::AppHandle) -> Result<(), String> {
     let mut labels: Vec<String> = app.webview_windows().keys()
         .filter(|label| label.starts_with("editor-"))
@@ -1574,6 +1583,7 @@ fn main() {
             clear_primary_editor_if_current,
             close_current_editor,
             begin_application_shutdown,
+            focus_current_editor,
             approve_application_shutdown_editor,
             cancel_application_shutdown,
             focus_primary_editor,

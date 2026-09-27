@@ -336,8 +336,22 @@ function bindMenuEvents() {
     }
     const name = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
     el.unsavedCloseMessage.textContent = `${name} has unsaved changes. Save before closing AccessibleAudioStudio Pro?`;
+
+    // Quit may have been initiated from the Recording Studio while this editor
+    // was behind other application windows. Ask Rust to restore and foreground
+    // this exact native editor before opening its modal, then focus Save only
+    // after the modal is actually open. This avoids a silent shutdown request
+    // whose confirmation exists in another Alt+Tab window.
+    try {
+      await window.__TAURI__.core.invoke("focus_current_editor");
+    } catch (_) {}
     if (!el.unsavedCloseDialog.open) el.unsavedCloseDialog.showModal();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    try {
+      await window.__TAURI__.core.invoke("focus_current_editor");
+    } catch (_) {}
     el.closeSaveButton.focus();
+    announceStatus(`Closing AccessibleAudioStudio Pro. ${name} has unsaved changes.`);
   });
 }
 

@@ -45,7 +45,7 @@ export class AudioDocument {
 
     this.history = []; // past buffers, most recent last
     this.future = []; // buffers undone, for redo
-    this.dirty = isNew; // a fresh New Audio document already has "unsaved" status
+    this.dirty = false; // a newly created empty document is clean until its first real edit
 
     this.selection = null; // { startSec, endSec } | null
     this.cursorSec = 0;
