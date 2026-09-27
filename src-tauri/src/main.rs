@@ -1264,6 +1264,42 @@ fn focus_current_editor(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_unsaved_editor_names(app: tauri::AppHandle) -> Vec<String> {
+    let mut names: Vec<String> = app.webview_windows().iter()
+        .filter(|(label, _)| label.starts_with("editor-"))
+        .filter_map(|(_, window)| {
+            let title = window.title().ok()?;
+            if !title.contains(" (unsaved changes)") { return None; }
+            Some(title
+                .replace(" (unsaved changes) - Primary Editor - AccessibleAudioStudio Pro", "")
+                .replace(" (unsaved changes) - AccessibleAudioStudio Pro", ""))
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[tauri::command]
+fn discard_all_and_quit(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(state) = app.try_state::<ApplicationShutdownState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            guard.active = false;
+            guard.remaining.clear();
+        }
+    }
+    let labels: Vec<String> = app.webview_windows().keys()
+        .filter(|label| label.starts_with("editor-"))
+        .cloned().collect();
+    for label in labels {
+        if let Some(editor) = app.get_webview_window(&label) { let _ = editor.destroy(); }
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        main.destroy().map_err(|e| format!("Could not close AccessibleAudioStudio Pro: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn begin_application_shutdown(app: tauri::AppHandle) -> Result<(), String> {
     let mut labels: Vec<String> = app.webview_windows().keys()
         .filter(|label| label.starts_with("editor-"))
@@ -1582,6 +1618,8 @@ fn main() {
             set_current_editor_primary,
             clear_primary_editor_if_current,
             close_current_editor,
+            get_unsaved_editor_names,
+            discard_all_and_quit,
             begin_application_shutdown,
             focus_current_editor,
             approve_application_shutdown_editor,

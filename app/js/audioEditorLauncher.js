@@ -24,12 +24,50 @@ export function initAudioEditorLauncher() {
 async function bindApplicationCloseProtection() {
   if (!isRunningInTauri()) return;
   const currentWindow = window.__TAURI__.window.getCurrentWindow();
-  await currentWindow.onCloseRequested((event) => {
+  await currentWindow.onCloseRequested(async (event) => {
     event.preventDefault();
-    window.__TAURI__.core.invoke("begin_application_shutdown").catch((err) => {
+    if (el.quitDialog?.open) { el.saveAndQuitButton?.focus(); return; }
+    try {
+      const names = await window.__TAURI__.core.invoke("get_unsaved_editor_names");
+      if (!names || names.length === 0) {
+        await window.__TAURI__.core.invoke("discard_all_and_quit");
+        return;
+      }
+      showApplicationQuitDialog(names);
+    } catch (err) {
       announceAlert(`AccessibleAudioStudio Pro could not close. ${err && err.message ? err.message : String(err)}`);
-    });
+    }
   });
+}
+
+
+function showApplicationQuitDialog(names) {
+  el.quitMessage.textContent = names.length === 1
+    ? "AccessibleAudioStudio Pro has 1 unsaved audio document."
+    : `AccessibleAudioStudio Pro has ${names.length} unsaved audio documents.`;
+  el.quitDocumentList.replaceChildren(...names.map((name) => {
+    const li = document.createElement("li"); li.textContent = name; return li;
+  }));
+  el.quitDialog.showModal();
+  el.saveAndQuitButton.focus();
+  announceStatus(el.quitMessage.textContent);
+}
+
+async function handleSaveAndQuit() {
+  el.quitDialog.close();
+  try { await window.__TAURI__.core.invoke("begin_application_shutdown"); }
+  catch (err) { announceAlert(`AccessibleAudioStudio Pro could not close. ${err && err.message ? err.message : String(err)}`); }
+}
+
+async function handleDiscardAndQuit() {
+  el.quitDialog.close();
+  try { await window.__TAURI__.core.invoke("discard_all_and_quit"); }
+  catch (err) { announceAlert(`AccessibleAudioStudio Pro could not close. ${err && err.message ? err.message : String(err)}`); }
+}
+
+function cancelApplicationQuit() {
+  if (el.quitDialog?.open) el.quitDialog.close();
+  announceStatus("Quit canceled. Your documents remain open.");
 }
 
 /**
@@ -93,6 +131,12 @@ function cacheElements() {
     newAudioButton: document.getElementById("new-audio-button"),
     openStatus: document.getElementById("editor-open-status"),
     openAudioDiagnostics: document.getElementById("open-audio-diagnostics"),
+    quitDialog: document.getElementById("application-quit-dialog"),
+    quitMessage: document.getElementById("application-quit-message"),
+    quitDocumentList: document.getElementById("application-quit-document-list"),
+    saveAndQuitButton: document.getElementById("save-and-quit-button"),
+    discardAndQuitButton: document.getElementById("discard-and-quit-button"),
+    cancelQuitButton: document.getElementById("cancel-quit-button"),
   };
 }
 
@@ -100,6 +144,10 @@ function bindEvents() {
   el.openAudioButton.addEventListener("click", () => triggerOpenAudio());
   el.newAudioButton.addEventListener("click", () => triggerNewAudio());
   el.openAudioInput.addEventListener("change", handleOpenAudioInputChange);
+  el.saveAndQuitButton?.addEventListener("click", handleSaveAndQuit);
+  el.discardAndQuitButton?.addEventListener("click", handleDiscardAndQuit);
+  el.cancelQuitButton?.addEventListener("click", cancelApplicationQuit);
+  el.quitDialog?.addEventListener("cancel", (event) => { event.preventDefault(); cancelApplicationQuit(); });
 }
 
 function isRunningInTauri() {

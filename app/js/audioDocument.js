@@ -45,7 +45,8 @@ export class AudioDocument {
 
     this.history = []; // past buffers, most recent last
     this.future = []; // buffers undone, for redo
-    this.dirty = false; // a newly created empty document is clean until its first real edit
+    this._cleanBuffer = this.buffer; // exact immutable buffer at the last open/save checkpoint
+    this.dirty = false; // derived from whether the working buffer differs from that checkpoint
 
     this.selection = null; // { startSec, endSec } | null
     this.cursorSec = 0;
@@ -78,7 +79,7 @@ export class AudioDocument {
     if (this.history.length > MAX_HISTORY) this.history.shift();
     this.future = [];
     this.buffer = newBuffer;
-    this.dirty = true;
+    this.dirty = this.buffer !== this._cleanBuffer;
     if (clearSelection) this.selection = null;
     this.cursorSec = Math.min(this.cursorSec, this.durationSec);
   }
@@ -95,7 +96,7 @@ export class AudioDocument {
     if (!this.canUndo()) return false;
     this.future.push(this.buffer);
     this.buffer = this.history.pop();
-    this.dirty = true;
+    this.dirty = this.buffer !== this._cleanBuffer;
     this.selection = null;
     this.cursorSec = Math.min(this.cursorSec, this.durationSec);
     return true;
@@ -105,13 +106,14 @@ export class AudioDocument {
     if (!this.canRedo()) return false;
     this.history.push(this.buffer);
     this.buffer = this.future.pop();
-    this.dirty = true;
+    this.dirty = this.buffer !== this._cleanBuffer;
     this.selection = null;
     this.cursorSec = Math.min(this.cursorSec, this.durationSec);
     return true;
   }
 
   markSaved() {
+    this._cleanBuffer = this.buffer;
     this.dirty = false;
   }
 

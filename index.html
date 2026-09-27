@@ -140,6 +140,17 @@
       <p id="editor-open-status">No audio editor windows are open.</p>
     </section>
 
+
+    <dialog id="application-quit-dialog" aria-labelledby="application-quit-heading" aria-describedby="application-quit-message">
+      <h2 id="application-quit-heading">Unsaved audio documents</h2>
+      <p id="application-quit-message">AccessibleAudioStudio Pro has unsaved audio documents.</p>
+      <ul id="application-quit-document-list"></ul>
+      <div class="button-row">
+        <button type="button" id="save-and-quit-button">Save and Quit</button>
+        <button type="button" id="discard-and-quit-button">Don't Save and Quit</button>
+        <button type="button" id="cancel-quit-button">Cancel</button>
+      </div>
+    </dialog>
   </main>
 
   <footer class="app-footer">

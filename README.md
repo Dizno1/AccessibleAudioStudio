@@ -336,6 +336,13 @@ previous attempt's own diagnostics actually proved, not a guess:
   explicitly out of scope for this architectural milestone; see
   `docs/Pro Roadmap.md`, "What 0.2.0 deliberately does not solve."
 
+### Current test build notes - v0.2.7.20
+
+- Application shutdown is now initiated and confirmed in the Recording Studio window. If dirty editor windows exist, the Recording Studio lists them in one modal with Save and Quit, Don't Save and Quit, and Cancel.
+- Save and Quit preserves the existing serialized per-document save flow. Don't Save and Quit destroys all editor windows and the Recording Studio together. Cancel leaves every window open.
+- Dirty state now follows the last open/save buffer checkpoint. Undoing exactly back to that checkpoint clears the `(unsaved changes)` marker; redoing away from it restores the marker.
+- Audio editing, selection, clipboard, trimming, playback, and Primary Editor behavior were intentionally not changed in this pass.
+
 #### Pro version numbering
 
 Every Windows test build of Pro increments the version — it is never
