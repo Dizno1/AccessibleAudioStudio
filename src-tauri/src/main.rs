@@ -1227,12 +1227,27 @@ fn continue_application_shutdown(app: &tauri::AppHandle) -> Result<(), String> {
 
     if let Some(label) = next_label {
         if let Some(editor) = app.get_webview_window(&label) {
+            // Put the document requiring a shutdown decision in front of the
+            // user before its JS opens/focuses any confirmation dialog.
+            editor.set_focus()
+                .map_err(|e| format!("Could not focus editor during shutdown: {e}"))?;
             editor.emit("application-close-requested", ())
                 .map_err(|e| format!("Could not request editor close: {e}"))?;
         }
         return Ok(());
     }
 
+    // All editors have now approved shutdown. Only at this point destroy any
+    // document windows. This is deliberately two-phase so Cancel can truly
+    // abort Quit without discovering that earlier clean windows are already gone.
+    let editor_labels: Vec<String> = app.webview_windows().keys()
+        .filter(|label| label.starts_with("editor-"))
+        .cloned().collect();
+    for label in editor_labels {
+        if let Some(editor) = app.get_webview_window(&label) {
+            let _ = editor.destroy();
+        }
+    }
     if let Some(main) = app.get_webview_window("main") {
         main.destroy().map_err(|e| format!("Could not close AccessibleAudioStudio Pro: {e}"))?;
     }
@@ -1253,6 +1268,14 @@ fn begin_application_shutdown(app: tauri::AppHandle) -> Result<(), String> {
         guard.active = true;
         guard.remaining = labels.into_iter().collect();
     }
+    continue_application_shutdown(&app)
+}
+
+#[tauri::command]
+fn approve_application_shutdown_editor(app: tauri::AppHandle) -> Result<(), String> {
+    // The current editor has either no changes, was saved successfully, or the
+    // user explicitly chose Don't Save. Keep the window alive for now; Quit is
+    // two-phase and destroys all editors only after every document approves.
     continue_application_shutdown(&app)
 }
 
@@ -1551,6 +1574,7 @@ fn main() {
             clear_primary_editor_if_current,
             close_current_editor,
             begin_application_shutdown,
+            approve_application_shutdown_editor,
             cancel_application_shutdown,
             focus_primary_editor,
         ])

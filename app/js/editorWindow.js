@@ -245,7 +245,10 @@ function bindEvents() {
   });
 
   el.closeSaveButton.addEventListener("click", handleCloseWithSave);
-  el.closeDiscardButton.addEventListener("click", () => closeEditorAfterDecision(false));
+  el.closeDiscardButton.addEventListener("click", () => {
+    if (applicationShutdownRequested) approveApplicationShutdownEditor();
+    else closeEditorAfterDecision(false);
+  });
   el.closeCancelButton.addEventListener("click", cancelUnsavedClose);
   el.unsavedCloseDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
@@ -328,7 +331,7 @@ function bindMenuEvents() {
   listen("application-close-requested", async () => {
     applicationShutdownRequested = true;
     if (!activeDoc || !activeDoc.dirty) {
-      await closeEditorAfterDecision(false);
+      await approveApplicationShutdownEditor();
       return;
     }
     const name = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
@@ -423,12 +426,38 @@ async function cancelUnsavedClose() {
 
 async function handleCloseWithSave() {
   if (!activeDoc) return;
+
+  // A new document needs Save As. Close the modal first so the Save As
+  // controls are actually reachable and focusable instead of sitting behind
+  // an open modal dialog. The shutdown remains pending until Save As succeeds.
+  if (activeDoc.isNew) {
+    if (el.unsavedCloseDialog?.open) el.unsavedCloseDialog.close();
+    openSaveAsForm();
+    return;
+  }
+
   const saved = await handleSave();
   if (!saved || activeDoc.dirty) {
     announceAlert("The document was not closed because it was not saved.");
     return;
   }
-  await closeEditorAfterDecision(true);
+  if (applicationShutdownRequested) {
+    await approveApplicationShutdownEditor();
+  } else {
+    await closeEditorAfterDecision(true);
+  }
+}
+
+async function approveApplicationShutdownEditor() {
+  if (!isRunningInTauri()) return;
+  if (el.unsavedCloseDialog?.open) el.unsavedCloseDialog.close();
+  applicationShutdownRequested = false;
+  try {
+    await window.__TAURI__.core.invoke("approve_application_shutdown_editor");
+  } catch (err) {
+    announceAlert("AccessibleAudioStudio Pro could not continue closing. " +
+      (err && err.message ? err.message : String(err)));
+  }
 }
 
 async function closeEditorAfterDecision(_saved) {
@@ -1310,8 +1339,15 @@ function openSaveAsForm() {
   el.saveAsNameInput.select();
 }
 
-function closeSaveAsForm() {
+async function closeSaveAsForm() {
   el.saveAsForm.hidden = true;
+  if (applicationShutdownRequested) {
+    // Canceling Save As while quitting means Cancel Quit. No already-open
+    // editor windows are sacrificed.
+    applicationShutdownRequested = false;
+    try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+    announceStatus("Close canceled. Your changes are still open.");
+  }
 }
 
 async function handleConfirmSaveAs() {
@@ -1344,7 +1380,7 @@ async function saveAs(filename, format, { formatSubstituted = false, originalExt
         : "Audio saved."
     );
     if (applicationShutdownRequested) {
-      await closeEditorAfterDecision(true);
+      await approveApplicationShutdownEditor();
     }
     return true;
   } catch (err) {
