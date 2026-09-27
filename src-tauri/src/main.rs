@@ -1263,6 +1263,35 @@ fn focus_current_editor(window: tauri::WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|e| format!("Could not focus editor: {e}"))
 }
 
+
+#[tauri::command]
+fn save_audio_to_workspace(filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    // AccessibleAudioStudio owns a predictable workspace instead of relying on
+    // the WebView download folder. Project persistence will grow beneath this
+    // root in later builds; current audio saves live in Audio.
+    let profile = std::env::var("USERPROFILE")
+        .map_err(|_| "Windows user profile folder is unavailable.".to_string())?;
+    let workspace = PathBuf::from(profile)
+        .join("Documents")
+        .join("AccessibleAudioStudio")
+        .join("Audio");
+    fs::create_dir_all(&workspace)
+        .map_err(|e| format!("Could not create AccessibleAudioStudio workspace: {e}"))?;
+
+    // A save name is a basename only. Never allow a document name to escape
+    // the application workspace through path separators.
+    let safe_name: String = filename.chars()
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    let safe_name = safe_name.trim().trim_matches('.');
+    if safe_name.is_empty() {
+        return Err("Enter a file name before saving.".to_string());
+    }
+    let path = workspace.join(safe_name);
+    fs::write(&path, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn get_unsaved_editor_names(app: tauri::AppHandle) -> Vec<String> {
     let mut names: Vec<String> = app.webview_windows().iter()
@@ -1619,6 +1648,7 @@ fn main() {
             clear_primary_editor_if_current,
             close_current_editor,
             get_unsaved_editor_names,
+            save_audio_to_workspace,
             discard_all_and_quit,
             begin_application_shutdown,
             focus_current_editor,

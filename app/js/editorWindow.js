@@ -334,24 +334,27 @@ function bindMenuEvents() {
       await approveApplicationShutdownEditor();
       return;
     }
-    const name = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
-    el.unsavedCloseMessage.textContent = `${name} has unsaved changes. Save before closing AccessibleAudioStudio Pro?`;
 
-    // Quit may have been initiated from the Recording Studio while this editor
-    // was behind other application windows. Ask Rust to restore and foreground
-    // this exact native editor before opening its modal, then focus Save only
-    // after the modal is actually open. This avoids a silent shutdown request
-    // whose confirmation exists in another Alt+Tab window.
-    try {
-      await window.__TAURI__.core.invoke("focus_current_editor");
-    } catch (_) {}
-    if (!el.unsavedCloseDialog.open) el.unsavedCloseDialog.showModal();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    try {
-      await window.__TAURI__.core.invoke("focus_current_editor");
-    } catch (_) {}
-    el.closeSaveButton.focus();
-    announceStatus(`Closing AccessibleAudioStudio Pro. ${name} has unsaved changes.`);
+    // Save and Quit was already chosen in the Recording Studio. Do not ask a
+    // second Save/Don't Save question in this editor. A named document saves
+    // immediately; an Untitled document is brought forward only for the one
+    // thing the Recording Studio cannot invent for the user: its file name.
+    try { await window.__TAURI__.core.invoke("focus_current_editor"); } catch (_) {}
+    if (activeDoc.isNew) {
+      openSaveAsForm();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      el.saveAsNameInput.focus();
+      el.saveAsNameInput.select();
+      announceStatus("Save and Quit. Enter a file name, then press Enter to save and continue closing AccessibleAudioStudio Pro.");
+      return;
+    }
+
+    const saved = await handleSave();
+    if (!saved || activeDoc.dirty) {
+      applicationShutdownRequested = false;
+      try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+      announceAlert("Quit canceled because this document could not be saved.");
+    }
   });
 }
 
@@ -1379,7 +1382,13 @@ async function handleConfirmSaveAs() {
 async function saveAs(filename, format, { formatSubstituted = false, originalExtension = "" } = {}) {
   try {
     const blob = format === "mp3" ? encodeMp3(activeDoc.buffer) : encodeWav(activeDoc.buffer);
-    downloadBlob(blob, filename);
+    let savedPath = filename;
+    if (isRunningInTauri()) {
+      const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+      savedPath = await window.__TAURI__.core.invoke("save_audio_to_workspace", { filename, bytes });
+    } else {
+      downloadBlob(blob, filename);
+    }
 
     activeDoc.baseName = filename;
     activeDoc.sourceExtension = format;
@@ -1391,7 +1400,7 @@ async function saveAs(filename, format, { formatSubstituted = false, originalExt
     announceStatus(
       formatSubstituted
         ? `Audio saved as ${format.toUpperCase()}. AccessibleAudioStudio Pro cannot write .${originalExtension} files, so it saved as ${format.toUpperCase()} instead.`
-        : "Audio saved."
+        : `Audio saved to AccessibleAudioStudio workspace${savedPath && isRunningInTauri() ? ": " + savedPath : "."}`
     );
     if (applicationShutdownRequested) {
       await approveApplicationShutdownEditor();
