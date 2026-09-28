@@ -142,8 +142,17 @@ async function loadDocumentForThisWindow() {
   }
 }
 
-function finishLoadingDocument() {
-  updateWindowTitle();
+async function finishLoadingDocument() {
+  // The Rust/Recording Studio controller is authoritative. A newly opened
+  // detail window first asks the master who is Primary, then publishes its
+  // document facts upward. Merely visiting a window can never change Primary.
+  if (isRunningInTauri()) {
+    try {
+      const info = await window.__TAURI__.core.invoke("get_primary_editor_info");
+      isPrimaryEditor = info.label === window.__TAURI__.window.getCurrentWindow().label;
+    } catch (_) { isPrimaryEditor = false; }
+  }
+  await updateWindowTitle();
   render();
   announceStatus(`${activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "")} opened.`);
   focusElement(el.documentHeading);
@@ -165,10 +174,27 @@ async function updateWindowTitle() {
       ? baseTitle.replace(" - AccessibleAudioStudio Pro", " - Primary Editor - AccessibleAudioStudio Pro")
       : `${baseTitle} - Primary Editor`;
     await getCurrentWindow().setTitle(isPrimaryEditor ? primaryTitle : baseTitle);
+    await publishDocumentState();
   } catch (err) {
     // A window-title update failing is not worth interrupting the user
     // over — the in-page heading (updated separately, see render()) still
     // carries the same information for anyone reading the page itself.
+  }
+}
+
+async function publishDocumentState() {
+  if (!isRunningInTauri() || !activeDoc) return;
+  try {
+    await window.__TAURI__.core.invoke("register_document_state", {
+      documentId: activeDoc.id,
+      displayName: activeDoc.baseName || `Untitled Audio ${activeDoc._displayNumber || ""}`.trim(),
+      path: activeDoc.sourceKey || null,
+      dirty: !!activeDoc.dirty,
+      isNew: !!activeDoc.isNew,
+    });
+  } catch (_) {
+    // The OS title remains a useful fallback surface, but application-level
+    // decisions never infer dirty/Primary state from it in the master model.
   }
 }
 

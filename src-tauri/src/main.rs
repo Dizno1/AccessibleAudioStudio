@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use serde::Serialize;
 
@@ -1186,6 +1186,60 @@ async fn get_shared_audio_clipboard(
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 
+
+/// Application-level master registry for open audio documents.
+///
+/// Editor windows are detail views. They report facts (name, path, dirty state)
+/// upward; they never own application truth. Recording Studio/Rust owns this
+/// registry, Primary Editor identity, and shutdown coordination. This prevents
+/// independent windows from drifting into contradictory state.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentRecord {
+    window_label: String,
+    document_id: String,
+    display_name: String,
+    path: Option<String>,
+    dirty: bool,
+    is_new: bool,
+}
+
+#[derive(Default)]
+struct DocumentRegistryState(Mutex<HashMap<String, DocumentRecord>>);
+
+#[tauri::command]
+fn register_document_state(
+    window: tauri::WebviewWindow,
+    document_id: String,
+    display_name: String,
+    path: Option<String>,
+    dirty: bool,
+    is_new: bool,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    let state = app.try_state::<DocumentRegistryState>()
+        .ok_or_else(|| "Document registry is unavailable.".to_string())?;
+    let mut guard = state.0.lock().map_err(|_| "Could not update document registry.".to_string())?;
+    guard.insert(label.clone(), DocumentRecord {
+        window_label: label,
+        document_id,
+        display_name,
+        path,
+        dirty,
+        is_new,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn unregister_document_state(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(state) = app.try_state::<DocumentRegistryState>() {
+        if let Ok(mut guard) = state.0.lock() { guard.remove(window.label()); }
+    }
+    Ok(())
+}
+
 /// Which editor window (if any) currently holds the Primary Editor role
 /// — a role assigned to an ordinary document window, not a separate
 /// document type. At most one editor is Primary at once; making a
@@ -1371,15 +1425,11 @@ fn save_audio_to_path(path: String, bytes: Vec<u8>) -> Result<String, String> {
 
 #[tauri::command]
 fn get_unsaved_editor_names(app: tauri::AppHandle) -> Vec<String> {
-    let mut names: Vec<String> = app.webview_windows().iter()
-        .filter(|(label, _)| label.starts_with("editor-"))
-        .filter_map(|(_, window)| {
-            let title = window.title().ok()?;
-            if !title.contains(" (unsaved changes)") { return None; }
-            Some(title
-                .replace(" (unsaved changes) - Primary Editor - AccessibleAudioStudio Pro", "")
-                .replace(" (unsaved changes) - AccessibleAudioStudio Pro", ""))
-        })
+    let Some(state) = app.try_state::<DocumentRegistryState>() else { return Vec::new(); };
+    let Ok(guard) = state.0.lock() else { return Vec::new(); };
+    let mut names: Vec<String> = guard.values()
+        .filter(|doc| doc.dirty)
+        .map(|doc| doc.display_name.clone())
         .collect();
     names.sort();
     names
@@ -1407,9 +1457,15 @@ fn discard_all_and_quit(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn begin_application_shutdown(app: tauri::AppHandle) -> Result<(), String> {
-    let mut labels: Vec<String> = app.webview_windows().keys()
-        .filter(|label| label.starts_with("editor-"))
-        .cloned().collect();
+    // The master registry, not window titles, determines which documents
+    // require a save decision. Clean detail windows never participate in the
+    // save transaction.
+    let mut labels: Vec<String> = app.try_state::<DocumentRegistryState>()
+        .and_then(|state| state.0.lock().ok().map(|guard| guard.values()
+            .filter(|doc| doc.dirty)
+            .map(|doc| doc.window_label.clone())
+            .collect()))
+        .unwrap_or_default();
     labels.sort();
     {
         let state = app.try_state::<ApplicationShutdownState>()
@@ -1529,6 +1585,9 @@ fn close_current_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> 
         }
     }
 
+    if let Some(registry) = app.try_state::<DocumentRegistryState>() {
+        if let Ok(mut guard) = registry.0.lock() { guard.remove(&closing_label); }
+    }
     window.destroy().map_err(|e| format!("Could not close editor window: {e}"))?;
 
     let shutdown_active = app.try_state::<ApplicationShutdownState>()
@@ -1698,6 +1757,7 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingEditorSources(Mutex::new(HashMap::new())))
         .manage(SharedAudioClipboard::default())
+        .manage(DocumentRegistryState::default())
         .manage(PrimaryEditorState::default())
         .manage(ApplicationShutdownState::default())
         .setup(|app| {
@@ -1720,6 +1780,8 @@ fn main() {
             get_editor_init_info,
             set_shared_audio_clipboard,
             get_shared_audio_clipboard,
+            register_document_state,
+            unregister_document_state,
             get_primary_editor_info,
             set_current_editor_primary,
             clear_primary_editor_if_current,

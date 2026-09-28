@@ -414,3 +414,15 @@ Build 0.2.2 via GitHub Actions and reproduce the exact workflow the previous tes
 - Canceling Save As during Save and Quit cancels the entire quit transaction and leaves every document open. A save error does the same and is announced as a failure.
 - Successful saves announce the filename and immediately clear `(unsaved changes)`. Undo/redo dirty state remains tied to the clean buffer checkpoint established by open/save.
 - Existing Ctrl+Page Up / Ctrl+Page Down editor-location navigation and the editing engine were deliberately left unchanged.
+
+## 0.2.7.23 - Master-detail application state architecture
+
+AccessibleAudioStudio now treats the Recording Studio/native application controller as the master and each audio editor window as a detail view. This is a deliberate architectural boundary, not merely a UI convention.
+
+The master owns application-wide truth: the open-document registry, each document's stable ID, display name, save path, dirty/clean state, whether it is Untitled/new, the single Primary Editor identity, and application shutdown coordination. Editor windows own audio-editing behavior and report document facts upward. They do not independently decide application state.
+
+Primary Editor is therefore a single authoritative application value. Visiting, editing, copying from, pasting into, or Alt+Tabbing to another editor never changes Primary. Only the explicit Make This Editor Primary command may request a transfer. When the master accepts that request, every editor is notified of the one resulting Primary label and updates its title from that authoritative value.
+
+Dirty-document discovery for application shutdown now comes from the master document registry rather than parsing window titles. Save and Quit builds its transaction from registry records that are actually dirty. Clean editor windows do not participate in the save transaction. An Untitled dirty document remains Untitled until a filesystem save succeeds; cancellation or failure leaves the registry dirty and cancels shutdown.
+
+This master-detail rule is intended to remain the governing architecture as AudioStudio grows. Future tracks, mixer state, markers, meters, and project persistence should attach beneath the authoritative document/application model rather than becoming independent window-local sources of truth.
