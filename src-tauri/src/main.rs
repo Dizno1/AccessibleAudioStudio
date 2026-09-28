@@ -856,7 +856,6 @@ struct PasteDiagnostics {
 /// file's bytes immediately, each valid path gets its own new editor
 /// window, and that window reads its own single file's bytes once it
 /// exists, via `get_editor_init_info` below.
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
