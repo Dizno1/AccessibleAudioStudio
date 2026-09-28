@@ -404,3 +404,13 @@ Build 0.2.2 via GitHub Actions and reproduce the exact workflow the previous tes
 - Application shutdown waits for each save to complete successfully before continuing. Canceling the Untitled Save As step cancels the entire quit transaction and leaves the session open.
 - Audio editing, selection, copy/paste, trimming, and playback code were intentionally left unchanged in this stabilization build.
 - The workspace root is intentionally structured so later builds can add persistent project data, tracks/channels, and mixer state without changing the user's top-level AccessibleAudioStudio home. A native editable project format and mixer are future work; this build does not mislabel flattened WAV/MP3 audio as a project file.
+
+### 0.2.7.22 save-integrity build
+
+- Save integrity is now the gating concern: no confirmed disk write is treated as a successful save, and application shutdown cannot advance after a failed or canceled save.
+- Ctrl+S on an Untitled document, Save As, and Save and Quit for an Untitled dirty document now use the same native Windows Save As workflow.
+- The native Save As dialog starts in `Documents\AccessibleAudioStudio\Audio`; that workspace is created when Save As is first needed. The proposed filename is supplied to Windows, Enter performs the normal Save action, and Windows supplies its standard overwrite confirmation when a destination already exists.
+- A successful first save records the chosen full path. Later Ctrl+S writes back to that same path without asking for the name again. Ctrl+Shift+S remains Save As.
+- Canceling Save As during Save and Quit cancels the entire quit transaction and leaves every document open. A save error does the same and is announced as a failure.
+- Successful saves announce the filename and immediately clear `(unsaved changes)`. Undo/redo dirty state remains tied to the clean buffer checkpoint established by open/save.
+- Existing Ctrl+Page Up / Ctrl+Page Down editor-location navigation and the editing engine were deliberately left unchanged.

@@ -1292,6 +1292,83 @@ fn save_audio_to_workspace(filename: String, bytes: Vec<u8>) -> Result<String, S
     Ok(path.to_string_lossy().to_string())
 }
 
+
+
+#[cfg(windows)]
+fn save_audio_as_native_impl(app: &tauri::AppHandle, suggested_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
+    use tauri::Manager;
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Controls::Dialogs::{
+        CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_HIDEREADONLY,
+        OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+    use raw_window_handle::HasWindowHandle;
+
+    fn to_wide(s: &str) -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() }
+
+    let profile = std::env::var("USERPROFILE")
+        .map_err(|_| "Windows user profile folder is unavailable.".to_string())?;
+    let workspace = PathBuf::from(profile).join("Documents").join("AccessibleAudioStudio").join("Audio");
+    fs::create_dir_all(&workspace)
+        .map_err(|e| format!("Could not create AccessibleAudioStudio workspace: {e}"))?;
+
+    let owner_hwnd: HWND = app.get_webview_window("main")
+        .and_then(|w| w.window_handle().ok().and_then(|handle| match handle.as_raw() {
+            raw_window_handle::RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut std::ffi::c_void)),
+            _ => None,
+        })).unwrap_or_default();
+
+    let filter = to_wide("WAV audio\0*.wav\0MP3 audio\0*.mp3\0All Files\0*.*\0\0");
+    let title = to_wide("Save Audio As");
+    let initial_dir = to_wide(&workspace.to_string_lossy());
+    let mut file_buffer: Vec<u16> = vec![0u16; 32768];
+    let suggested = to_wide(suggested_name);
+    let copy_len = suggested.len().min(file_buffer.len());
+    file_buffer[..copy_len].copy_from_slice(&suggested[..copy_len]);
+
+    let mut ofn = OPENFILENAMEW::default();
+    ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = owner_hwnd;
+    ofn.lpstrFilter = windows::core::PCWSTR(filter.as_ptr());
+    ofn.lpstrFile = PWSTR(file_buffer.as_mut_ptr());
+    ofn.nMaxFile = file_buffer.len() as u32;
+    ofn.lpstrInitialDir = windows::core::PCWSTR(initial_dir.as_ptr());
+    ofn.lpstrTitle = windows::core::PCWSTR(title.as_ptr());
+    ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+
+    let succeeded = unsafe { GetSaveFileNameW(&mut ofn) };
+    if !succeeded.as_bool() {
+        let code = unsafe { CommDlgExtendedError() };
+        if code.0 == 0 { return Ok(None); }
+        return Err(format!("Save As dialog failed (CommDlgExtendedError code {}).", code.0));
+    }
+    let end = file_buffer.iter().position(|&c| c == 0).unwrap_or(file_buffer.len());
+    let path = PathBuf::from(String::from_utf16_lossy(&file_buffer[..end]));
+    fs::write(&path, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn save_audio_as_native(app: tauri::AppHandle, suggested_name: String, bytes: Vec<u8>) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    { return save_audio_as_native_impl(&app, &suggested_name, &bytes); }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        let path = save_audio_to_workspace(suggested_name, bytes)?;
+        Ok(Some(path))
+    }
+}
+
+#[tauri::command]
+fn save_audio_to_path(path: String, bytes: Vec<u8>) -> Result<String, String> {
+    let target = PathBuf::from(&path);
+    if target.as_os_str().is_empty() { return Err("No save destination is available.".to_string()); }
+    fs::write(&target, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn get_unsaved_editor_names(app: tauri::AppHandle) -> Vec<String> {
     let mut names: Vec<String> = app.webview_windows().iter()
@@ -1649,6 +1726,8 @@ fn main() {
             close_current_editor,
             get_unsaved_editor_names,
             save_audio_to_workspace,
+            save_audio_as_native,
+            save_audio_to_path,
             discard_all_and_quit,
             begin_application_shutdown,
             focus_current_editor,

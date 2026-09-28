@@ -335,21 +335,11 @@ function bindMenuEvents() {
       return;
     }
 
-    // Save and Quit was already chosen in the Recording Studio. Do not ask a
-    // second Save/Don't Save question in this editor. A named document saves
-    // immediately; an Untitled document is brought forward only for the one
-    // thing the Recording Studio cannot invent for the user: its file name.
-    try { await window.__TAURI__.core.invoke("focus_current_editor"); } catch (_) {}
-    if (activeDoc.isNew) {
-      openSaveAsForm();
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      el.saveAsNameInput.focus();
-      el.saveAsNameInput.select();
-      announceStatus("Save and Quit. Enter a file name, then press Enter to save and continue closing AccessibleAudioStudio Pro.");
-      return;
-    }
-
-    const saved = await handleSave();
+    // Save and Quit was already chosen in the Recording Studio. The editor
+    // must now produce an explicit successful save result before shutdown can
+    // advance. Untitled documents use the native Windows Save As dialog owned
+    // by the Recording Studio, so no background editor has to steal focus.
+    const saved = activeDoc.isNew ? await handleNativeSaveAs() : await handleSave();
     if (!saved || activeDoc.dirty) {
       applicationShutdownRequested = false;
       try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
@@ -1324,95 +1314,101 @@ function refreshAfterEdit() {
 // Save / Save As
 // ---------------------------------------------------------------------
 
-async function handleSave() {
-  if (!activeDoc) return false;
+async function encodeActiveDocument(format) {
+  return format === "mp3" ? encodeMp3(activeDoc.buffer) : encodeWav(activeDoc.buffer);
+}
 
-  // A new document has never been given a user-chosen destination. Ctrl+S
-  // therefore behaves like the first Save in a conventional desktop editor:
-  // open Save As and let the user name it. Once that succeeds, later Ctrl+S
-  // can save directly using the established name/format.
-  if (activeDoc.isNew) {
-    openSaveAsForm();
+function formatForDocument() {
+  return activeDoc && activeDoc.sourceExtension === "mp3" ? "mp3" : "wav";
+}
+
+async function handleNativeSaveAs() {
+  if (!activeDoc) return false;
+  const format = formatForDocument();
+  const proposedBase = activeDoc.baseName ? stripExtension(activeDoc.baseName) : "Untitled Audio";
+  const suggestedName = `${proposedBase}.${format}`;
+  try {
+    const blob = await encodeActiveDocument(format);
+    if (!isRunningInTauri()) {
+      downloadBlob(blob, suggestedName);
+      activeDoc.baseName = suggestedName;
+      activeDoc.sourceExtension = format;
+      activeDoc.isNew = false;
+      activeDoc.markSaved();
+      updateWindowTitle(); updateButtonStates();
+      announceStatus(`${suggestedName} saved.`);
+      return true;
+    }
+    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    const savedPath = await window.__TAURI__.core.invoke("save_audio_as_native", { suggestedName, bytes });
+    if (!savedPath) {
+      if (applicationShutdownRequested) {
+        applicationShutdownRequested = false;
+        try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+        announceStatus("Save As canceled. Quit canceled. Your changes are still open.");
+      } else {
+        announceStatus("Save As canceled. Your changes are still open.");
+      }
+      return false;
+    }
+    const filename = savedPath.replace(/^.*[\\/]/, "");
+    activeDoc.baseName = filename;
+    activeDoc.sourceExtension = (filename.split(".").pop() || format).toLowerCase();
+    activeDoc.sourceKey = savedPath;
+    activeDoc.isNew = false;
+    activeDoc.markSaved();
+    updateWindowTitle(); updateButtonStates();
+    announceStatus(`${filename} saved.`);
+    if (applicationShutdownRequested) await approveApplicationShutdownEditor();
+    return true;
+  } catch (err) {
+    if (applicationShutdownRequested) {
+      applicationShutdownRequested = false;
+      try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+    }
+    announceAlert(`Save failed. ${err && err.message ? err.message : String(err)} The document remains open with unsaved changes.`);
     return false;
   }
+}
 
-  const canKeepFormat = activeDoc.sourceExtension === "mp3" || activeDoc.sourceExtension === "wav";
-  const format = canKeepFormat ? activeDoc.sourceExtension : "wav";
-  const name = (activeDoc.baseName ? stripExtension(activeDoc.baseName) : "Untitled Audio") + "." + format;
-  return await saveAs(name, format, {
-    formatSubstituted: !canKeepFormat,
-    originalExtension: activeDoc.sourceExtension,
-  });
+async function handleSave() {
+  if (!activeDoc) return false;
+  if (activeDoc.isNew || !activeDoc.sourceKey) return await handleNativeSaveAs();
+
+  const format = formatForDocument();
+  try {
+    const blob = await encodeActiveDocument(format);
+    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    const savedPath = await window.__TAURI__.core.invoke("save_audio_to_path", { path: activeDoc.sourceKey, bytes });
+    activeDoc.markSaved();
+    updateWindowTitle(); updateButtonStates();
+    announceStatus(`${activeDoc.baseName || "Audio"} saved.`);
+    if (applicationShutdownRequested) await approveApplicationShutdownEditor();
+    return !!savedPath;
+  } catch (err) {
+    if (applicationShutdownRequested) {
+      applicationShutdownRequested = false;
+      try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+    }
+    announceAlert(`Save failed. ${err && err.message ? err.message : String(err)} The document remains open with unsaved changes.`);
+    return false;
+  }
 }
 
 function openSaveAsForm() {
-  if (!activeDoc) return;
-  el.saveAsNameInput.value = activeDoc.baseName ? stripExtension(activeDoc.baseName) : "Untitled Audio";
-  el.saveAsFormatSelect.value = activeDoc.sourceExtension === "mp3" ? "mp3" : "wav";
-  el.saveAsForm.hidden = false;
-  el.saveAsNameInput.focus();
-  // Desktop Save As convention: the proposed base name is selected so the
-  // first character typed replaces it instead of being appended to it.
-  el.saveAsNameInput.select();
+  // Save As is intentionally the native Windows dialog. It provides familiar
+  // filename editing, Enter-to-save behavior, and the OS overwrite warning.
+  void handleNativeSaveAs();
 }
 
 async function closeSaveAsForm() {
-  el.saveAsForm.hidden = true;
-  if (applicationShutdownRequested) {
-    // Canceling Save As while quitting means Cancel Quit. No already-open
-    // editor windows are sacrificed.
-    applicationShutdownRequested = false;
-    try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
-    announceStatus("Close canceled. Your changes are still open.");
-  }
+  // Retained for compatibility with the existing hidden legacy panel. Native
+  // Save As cancellation is handled by handleNativeSaveAs().
+  if (el.saveAsForm) el.saveAsForm.hidden = true;
 }
 
 async function handleConfirmSaveAs() {
-  if (!activeDoc) return;
-  const rawName = el.saveAsNameInput.value.trim();
-  if (!rawName) {
-    announceAlert("Enter a file name before saving.");
-    return;
-  }
-  const format = el.saveAsFormatSelect.value;
-  el.saveAsForm.hidden = true;
-  await saveAs(rawName + "." + format, format);
-}
-
-async function saveAs(filename, format, { formatSubstituted = false, originalExtension = "" } = {}) {
-  try {
-    const blob = format === "mp3" ? encodeMp3(activeDoc.buffer) : encodeWav(activeDoc.buffer);
-    let savedPath = filename;
-    if (isRunningInTauri()) {
-      const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
-      savedPath = await window.__TAURI__.core.invoke("save_audio_to_workspace", { filename, bytes });
-    } else {
-      downloadBlob(blob, filename);
-    }
-
-    activeDoc.baseName = filename;
-    activeDoc.sourceExtension = format;
-    activeDoc.isNew = false;
-    activeDoc.markSaved();
-
-    updateWindowTitle();
-    updateButtonStates();
-    announceStatus(
-      formatSubstituted
-        ? `Audio saved as ${format.toUpperCase()}. AccessibleAudioStudio Pro cannot write .${originalExtension} files, so it saved as ${format.toUpperCase()} instead.`
-        : `Audio saved to AccessibleAudioStudio workspace${savedPath && isRunningInTauri() ? ": " + savedPath : "."}`
-    );
-    if (applicationShutdownRequested) {
-      await approveApplicationShutdownEditor();
-    }
-    return true;
-  } catch (err) {
-    announceAlert(
-      `Save failed. ${err && err.message ? err.message : "The audio could not be encoded."} ` +
-        "Try saving as WAV instead."
-    );
-    return false;
-  }
+  return await handleNativeSaveAs();
 }
 
 function downloadBlob(blob, filename) {
