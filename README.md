@@ -426,3 +426,11 @@ Primary Editor is therefore a single authoritative application value. Visiting, 
 Dirty-document discovery for application shutdown now comes from the master document registry rather than parsing window titles. Save and Quit builds its transaction from registry records that are actually dirty. Clean editor windows do not participate in the save transaction. An Untitled dirty document remains Untitled until a filesystem save succeeds; cancellation or failure leaves the registry dirty and cancels shutdown.
 
 This master-detail rule is intended to remain the governing architecture as AudioStudio grows. Future tracks, mixer state, markers, meters, and project persistence should attach beneath the authoritative document/application model rather than becoming independent window-local sources of truth.
+
+## 0.2.8 - Primary Editor: fixed a global-broadcast bug that let every editor act on one window's action
+
+The 0.2.7.23 master-detail design above was architecturally correct — one `PrimaryEditorState` in Rust, editors deriving their presentation from it — but every place the Rust side notified a specific window of something (a menu click, a Primary transfer, a shutdown request) used Tauri's plain `.emit()`, which broadcasts to every window in the app rather than the one it was called on. In practice this meant clicking any native menu item in one editor — "Make This Editor Primary" most visibly — made every other open editor receive and act on that same click against its own document. Fixed by targeting every such notification with `.emit_to(<window label>, ...)` instead. See `docs/Pro Roadmap.md`'s "Primary Editor architecture (authoritative)" section and its 0.2.8 entry for the full trace, and read that section before changing anything else in this area — it states the invariant a future change must not violate.
+
+A stale, unused duplicate of `close_current_editor`'s Primary-clearing logic (`clear_primary_editor_if_current`, never called from any JS file) was removed in the same pass rather than left as a second path to the same state change.
+
+This was a Rust-only fix. No editor UI, menu wording, keyboard shortcut, or audio-editing behavior changed. It has not yet been verified against a real installed Windows build or a real multi-window JAWS session — see the Pro Roadmap entry for exactly what was and wasn't checked.

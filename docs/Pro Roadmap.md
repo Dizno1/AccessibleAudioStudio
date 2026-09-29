@@ -6,6 +6,61 @@ engineering directive that was implemented first. See `docs/Roadmap.md` for
 the free AccessibleAudioStudio's own status — that application is unchanged
 and still fully functional; everything below is additive.
 
+## Primary Editor architecture (authoritative — read before touching this)
+
+AccessibleAudioStudio Pro is a master-detail application. This section is
+the invariant a future developer or AI coding assistant must not violate
+when touching anything related to the Primary Editor. It was made explicit
+here in 0.2.8 after a real bug (see the 0.2.8 changelog entry below) let
+that invariant be silently broken without any single line of code
+"deciding" to break it.
+
+**There is exactly one authoritative `primaryEditorId`, and it lives only
+in Rust**, as `PrimaryEditorState(Mutex<Option<String>>)` in
+`src-tauri/src/main.rs`. The value is a window label (`"editor-7"`) or
+`None`.
+
+- **Editor windows never own an independent, authoritative `isPrimary`
+  boolean.** `editorWindow.js`'s module-level `isPrimaryEditor` is a
+  *cached, derived* value only — it exists so the window doesn't have to
+  round-trip to Rust before every render, not as a second source of truth.
+  It is set only two ways: (1) on load, by asking Rust directly
+  (`get_primary_editor_info`), and (2) by Rust's own
+  `"primary-editor-state-changed"` broadcast, whose payload is always
+  compared against this window's own label before being trusted
+  (`isPrimaryEditor = event.payload === currentLabel`). No code path may
+  set `isPrimaryEditor = true` for any reason other than those two.
+- **Only one command may change `primaryEditorId`: `set_current_editor_primary`**,
+  invoked only from `requestMakePrimaryEditor()` in `editorWindow.js`,
+  invoked only by the user explicitly activating "Make This Editor
+  Primary" (Navigate menu). Opening a document, focusing a window,
+  Alt+Tabbing, playing audio, moving a playhead, making a selection, or
+  copying/pasting/saving a document must never call this command or set
+  the state any other way.
+- **Editor windows never emit their own Primary-related events to each
+  other.** All Primary-state broadcast traffic originates from Rust
+  (`set_current_editor_primary`, `close_current_editor`), and Rust is the
+  only thing that ever writes to `PrimaryEditorState`.
+- **Closing the current Primary Editor clears Primary to `None`.** It does
+  not transfer to another window, and no remaining editor may declare
+  itself Primary in its absence. Getting a Primary Editor again requires
+  an explicit "Make This Editor Primary" from the user, same as any other
+  transfer. This is the deterministic close policy; do not invent a
+  different one (such as "the next-focused window becomes Primary")
+  without discussing it first.
+- **Every Rust `.emit()` call aimed at one specific window must use
+  `emit_to(label, ...)`, never plain `.emit(...)`.** `WebviewWindow::emit()`
+  (and `AppHandle::emit()`) broadcast to every window in the app — this is
+  a real, confirmed difference from Tauri v1, not an assumption — so a bare
+  `.emit()` where only one recipient is intended will silently reach every
+  other open editor too. This was the actual root cause of the 0.2.8 bug
+  and is the single easiest way to reintroduce it.
+
+If you need to know whether a given window is Primary, the true answer is
+always `editorId == primaryEditorId` as tracked by Rust. Anything else is
+a cache of that answer, useful only until the next broadcast confirms or
+corrects it.
+
 ## Phase 1 engineering milestone — Completed
 
 The directive scoped Phase 1 to twelve specific capabilities (deliberately a
@@ -2694,20 +2749,178 @@ compiler-confirmed bug — genuinely different footing than 0.2.7.3's
 whether this is the last compile error standing between this codebase
 and an actual successful Windows build.
 
+## 0.2.8 — Primary Editor: one authoritative state, broken by a global broadcast
+
+This build was not requested through this file's own directive chain — it
+was handed over as a separate architecture-review assignment, delivered
+with a repository ZIP containing a substantial master-detail Primary
+Editor implementation (`PrimaryEditorState`, `DocumentRegistryState`,
+`ApplicationShutdownState`, per-window scoped native menus) that this
+roadmap had no prior record of. That work is now documented here for the
+first time; see "Primary Editor architecture (authoritative)" above for
+the resulting invariant.
+
+### Observed failure
+
+With three existing audio files open in separate editor windows, and later
+with an Untitled editor explicitly made Primary, every editor window
+either behaved as though it were Primary or presented Primary-related
+confirmations/behavior of its own — not just the one window the user had
+actually acted on.
+
+### Root cause
+
+**Confirmed against Tauri's own published API reference (docs.rs), not
+assumed from memory or a prior version's behavior.** `WebviewWindow::emit()`
+(and `AppHandle::emit()`), via the `Emitter` trait, "emits an event to all
+targets" — it is an app-wide broadcast in Tauri v2, not a send to the
+window instance it was called on. Every call site in `main.rs` that
+intended to notify exactly one window used plain `.emit(...)`, so every
+one of them actually reached every open window instead:
+
+- `handle_menu_event`'s dispatch of native menu clicks — the single most
+  consequential one. Every menu item's id is correctly stamped with its
+  owning window's label (`"editor-N::action"`) when the menu is built, and
+  `handle_menu_event` correctly parses that owner back out — but then
+  handed the bare action string to `window.emit("menu-action", action)`,
+  discarding the very scoping it had just computed. The result: clicking
+  **any** native menu item in **any** editor window caused **every** open
+  editor to receive that same `"menu-action"` event and act on it against
+  its own document. For "Make This Editor Primary" specifically, this
+  meant every open editor independently ran `requestMakePrimaryEditor()`
+  — showing reassignment confirmations, or silently claiming Primary — the
+  instant only one window's menu was used. This is the direct cause of the
+  reported symptom.
+- `focus_primary_editor`'s "no Primary is set" alert (`menu-action-unavailable`)
+  — every open editor spoke the alert at once instead of only the one that
+  asked.
+- `continue_application_shutdown`'s per-editor `application-close-requested`
+  notice — every remaining editor would receive it at once during Quit,
+  defeating the one-editor-at-a-time serialization the function's own
+  comments describe.
+- `set_current_editor_primary`'s and `close_current_editor`'s
+  `primary-editor-state-changed`/`primary-editor-confirmed` broadcasts —
+  these happened to still behave correctly in practice, because the
+  JavaScript listener for each already compares the payload against its
+  own window label before acting (`isPrimaryEditor = event.payload ===
+  currentLabel`). They were still switched to `emit_to` for consistency and
+  to stop delivering redundant duplicate events (see below), but they were
+  not, on their own, the source of the reported bug.
+
+### Architectural assessment
+
+**The state itself was never duplicated.** `PrimaryEditorState` is a
+single `Mutex<Option<String>>` in Rust, written only by
+`set_current_editor_primary` and cleared only by `close_current_editor`;
+`editorWindow.js`'s `isPrimaryEditor` is a correctly-guarded cache of it,
+not a second authority. The master-detail design itself — application
+truth in Rust, editors deriving their presentation from it — was sound.
+The bug was purely in event *delivery*: a notification meant for one
+recipient was, because of an unscoped `emit()` call, delivered to every
+recipient, and several of those recipients (menu-action above all) acted
+on it unconditionally rather than checking whether it was meant for them.
+
+### Fix
+
+Every `.emit(...)` call in `src-tauri/src/main.rs` aimed at one specific
+window was changed to `.emit_to(<that window's label>, ...)`, which Tauri
+resolves as an `EventTarget::AnyLabel` match against that exact window
+only. Seven call sites in total. No JavaScript file needed to change —
+the existing per-window label checks in `editorWindow.js` were already
+correct; they simply stopped needing to filter out cross-talk that should
+never have reached them in the first place.
+
+Also removed: `clear_primary_editor_if_current`, a second Tauri command
+that duplicated `close_current_editor`'s own clear-and-broadcast logic for
+the same situation, never invoked from any JS file. A stale, competing
+path to the same state change — removed outright rather than left beside
+the one that's actually used.
+
+### Tauri lifecycle findings
+
+No race condition, initialization-order problem, or duplicate event
+listener was found. Window creation (`open_editor_window_for_path`,
+`open_new_editor_window`) assigns each window a genuinely unique label
+from a single global atomic counter before building its menu from that
+same label, so no two editors' menu items were ever stamped with a
+colliding owner id. The single `app.on_menu_event(...)` listener is
+registered exactly once, at startup, matching Tauri's requirement that
+menu events be handled application-globally rather than per-window. The
+defect was not a timing or ordering problem; it was a single incorrect
+API call repeated at every site that needed to target one window.
+
+### Regression protection
+
+Opening additional editor windows cannot reintroduce multiple Primary
+editors: the authoritative value still lives in exactly one place
+(`PrimaryEditorState`), still changes only through
+`set_current_editor_primary`, and every notification about it is now
+delivered to only the window(s) it names. A new editor window has no way
+to receive a Primary-state notification meant for another window, because
+`emit_to` will not deliver it there.
+
+### Accessibility impact
+
+No change to keyboard shortcuts, menu structure, menu item wording,
+announcements, focus handling, or Ctrl+PageUp/Ctrl+PageDown navigation —
+none of that code was touched. The practical accessibility effect of the
+fix is that a screen reader user moving between editors will no longer
+hear unsolicited Primary Editor confirmations or "no Primary editor" alerts
+fired by windows they are not currently in.
+
+### Documentation update
+
+Added "Primary Editor architecture (authoritative)" above this entry,
+stating the invariant directly (one `primaryEditorId`, owned by Rust,
+changed only by explicit transfer, `emit_to` required for any single-window
+notification) so a future change to this code has something explicit to
+check itself against.
+
+### Testing
+
+**Locally verified:** brace/paren structural balance of `main.rs`; the
+complete existing JS test suite (10/10 passing, all pre-existing —
+untouched, since this fix is Rust-only); a full JS syntax check across
+every file in `app/js/`; the `Emitter`/`emit_to`/`EventTarget` API claims
+above were checked directly against Tauri's published docs.rs reference
+for the current crate version, not recalled from memory or a prior
+build's notes; a `git diff` confirming the change touches only
+`src-tauri/src/main.rs`.
+
+**Not verified:** an actual Rust compile. This sandbox's `cargo check`
+reached real dependency resolution and began compiling before failing —
+Windows cross-compilation needs the `rust-std-x86_64-pc-windows-msvc`
+component from `static.rust-lang.org`, which this environment's network
+policy doesn't allow; a native Linux build needs `webkit2gtk`/`gtk3`
+system packages that this environment's package mirror doesn't have
+available. Neither failure has anything to do with this change's
+correctness, but neither substitutes for a real compile, and this is
+stated plainly rather than glossed over. The `.emit()` → `.emit_to()`
+substitution itself is a small, mechanical, fully-documented API swap,
+not a speculative fix.
+
+**Still requires the real installed Windows build:** the full regression
+scenario from the review assignment — open three files, make an Untitled
+editor Primary, visit every editor in sequence, confirm no unsolicited
+Primary confirmation/alert fires anywhere but the window actually acted
+on, transfer Primary explicitly from a secondary editor, close the
+Primary editor and confirm no remaining editor elects itself — needs a
+real multi-window JAWS session to confirm. Also unverified: whether the
+Quit/shutdown serialization (`continue_application_shutdown`) now behaves
+one-editor-at-a-time as intended, since its own `emit_to` fix has the same
+"needs a real multi-window session" limitation.
+
 ## Recommended next phase
 
-Build #31 via GitHub Actions. If it fails, the exact raw compiler error
-text — copied verbatim, not paraphrased through Copilot — would resolve
-things far faster than another round of inference; this round only
-became productive once an isolated compile test replaced secondhand
-description with a real, reproducible error. If it succeeds: confirm the
-committed `Cargo.lock` is what the CI run actually used (check the build
-log's dependency list against `tauri 2.11.5`/`wry 0.55.1`/
-`raw-window-handle 0.6.2`), and treat the underlying window-handle/
-dependency-reproducibility problem as closed. From there, the
-substantial remaining 0.2.7 scope (README rewrite, the requested test
-additions, Layer 3 contextual shortcut help, Recording Studio parity,
-dynamic menu-item state) is the natural next increment — none of that
-architecture needs re-verifying on its own, only the build needed to
-actually succeed first, which is now closer than at any prior point in
-this line.
+Get 0.2.8 through a real Windows build (GitHub Actions) and, ideally,
+one real multi-window JAWS pass against the regression scenario above —
+this is the first build in this line to touch application-wide event
+delivery, so it deserves a real look before moving on. Separately, and
+unrelated to this build: build #31's Windows/JAWS verification for the
+0.2.7.4 HWND fix is still outstanding and hasn't been folded into this
+round — if it already ran, its raw result (and, if it failed, the raw
+compiler text) should come back before further work stacks on top of
+either the HWND fix or this one. Once both are confirmed, the substantial
+remaining 0.2.7 scope (README rewrite, the requested test additions,
+Layer 3 contextual shortcut help, Recording Studio parity, dynamic
+menu-item state) is the natural next increment.

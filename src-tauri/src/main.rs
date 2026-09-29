@@ -1284,7 +1284,12 @@ fn continue_application_shutdown(app: &tauri::AppHandle) -> Result<(), String> {
             // user before its JS opens/focuses any confirmation dialog.
             editor.set_focus()
                 .map_err(|e| format!("Could not focus editor during shutdown: {e}"))?;
-            editor.emit("application-close-requested", ())
+            // Tauri's Emitter::emit() broadcasts to every window in the app, not
+            // just the one it was called on (unlike Tauri v1). Without emit_to,
+            // every other open editor would also receive this and independently
+            // decide it must resolve unsaved changes right now, defeating the
+            // one-at-a-time serialization this function exists to provide.
+            editor.emit_to(label.as_str(), "application-close-requested", ())
                 .map_err(|e| format!("Could not request editor close: {e}"))?;
         }
         return Ok(());
@@ -1547,17 +1552,23 @@ fn set_current_editor_primary(window: tauri::WebviewWindow, app: tauri::AppHandl
 
     // Every editor receives the new owner label so the previous Primary
     // can immediately remove "Primary Editor" from its OS window title
-    // while the new Primary adds it.
+    // while the new Primary adds it. Each emit is explicitly targeted with
+    // emit_to(label, ...): plain emit() broadcasts to every window in the
+    // app (Recording Studio included), so without a target here every
+    // editor's listener would still work by coincidence (each filters by
+    // its own label) but each would also receive one copy per editor in
+    // this loop -- N windows means N deliveries apiece. emit_to keeps it
+    // to exactly one delivery per intended recipient.
     for (label, editor) in app.webview_windows() {
         if label.starts_with("editor-") {
-            let _ = editor.emit("primary-editor-state-changed", new_label.clone());
+            let _ = editor.emit_to(label.as_str(), "primary-editor-state-changed", new_label.clone());
         }
     }
 
     // Only the editor that actually gained the role announces the change.
     // Re-selecting the same Primary is intentionally silent.
     if old_label.as_deref() != Some(new_label.as_str()) {
-        let _ = window.emit("primary-editor-confirmed", new_label);
+        let _ = window.emit_to(new_label.as_str(), "primary-editor-confirmed", new_label.clone());
     }
     Ok(())
 }
@@ -1579,7 +1590,7 @@ fn close_current_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> 
 
         for (label, editor) in app.webview_windows() {
             if label.starts_with("editor-") && label != closing_label {
-                let _ = editor.emit("primary-editor-state-changed", Option::<String>::None);
+                let _ = editor.emit_to(label.as_str(), "primary-editor-state-changed", Option::<String>::None);
             }
         }
     }
@@ -1598,34 +1609,24 @@ fn close_current_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> 
     Ok(())
 }
 
-#[tauri::command]
-fn clear_primary_editor_if_current(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
-    let closing_label = window.label().to_string();
-    if primary_editor_label(&app).as_deref() != Some(closing_label.as_str()) {
-        return Ok(());
-    }
-
-    if let Some(state) = app.try_state::<PrimaryEditorState>() {
-        let mut guard = state.0.lock().map_err(|_| "Could not update Primary Editor state.".to_string())?;
-        *guard = None;
-    } else {
-        return Err("Primary Editor state is unavailable.".to_string());
-    }
-
-    for (label, editor) in app.webview_windows() {
-        if label.starts_with("editor-") && label != closing_label {
-            let _ = editor.emit("primary-editor-state-changed", Option::<String>::None);
-        }
-    }
-    Ok(())
-}
+// NOTE (Primary Editor architecture review): an earlier `clear_primary_editor_if_current`
+// command used to live here, duplicating the exact clear-and-broadcast logic that
+// `close_current_editor` already performs inline when the closing window is the
+// current Primary Editor. It was never invoked from any JS file — a dead, competing
+// path to the same state change — and has been removed outright rather than left in
+// place. `close_current_editor` remains the single place a window's closure can
+// affect Primary Editor state.
 
 #[tauri::command]
 fn focus_primary_editor(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     if focus_primary_editor_window(&app) {
         Ok(())
     } else {
-        let _ = window.emit("menu-action-unavailable", "goToPrimaryEditor");
+        // Targeted to the one editor that actually asked. A plain emit()
+        // would reach every open editor, so pressing "Go to Primary Editor"
+        // in one window while none is set would make every other open
+        // editor announce the same alert out loud at once.
+        let _ = window.emit_to(window.label(), "menu-action-unavailable", "goToPrimaryEditor");
         Err("No Primary Editor is currently available.".to_string())
     }
 }
@@ -1738,7 +1739,18 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             }
         }
         _ => {
-            let _ = window.emit("menu-action", action);
+            // THE ROOT CAUSE FIX: window.emit() is a Tauri v2 app-wide
+            // broadcast, not a send to `window` specifically (that changed
+            // from Tauri v1's behavior; emit_to is the v2 replacement for
+            // "send to one window"). The owner_label parsed off the menu
+            // item's own id above is exactly the window this click actually
+            // belongs to, so it must also be the emit target. Without this,
+            // every open editor's identical "menu-action" listener received
+            // every action fired from any window's menu -- most visibly,
+            // clicking "Make This Editor Primary" in one editor made every
+            // other open editor independently invoke the same Primary
+            // transfer/confirmation flow on itself.
+            let _ = window.emit_to(owner_label, "menu-action", action);
         }
     }
 }
@@ -1783,7 +1795,6 @@ fn main() {
             unregister_document_state,
             get_primary_editor_info,
             set_current_editor_primary,
-            clear_primary_editor_if_current,
             close_current_editor,
             get_unsaved_editor_names,
             save_audio_to_workspace,
