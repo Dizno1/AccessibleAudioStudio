@@ -358,12 +358,6 @@ function bindMenuEvents() {
     await updateWindowTitle();
   }, toThisWindow);
 
-  listen("primary-editor-confirmed", (event) => {
-    if (event.payload === currentLabel) {
-      announceStatus("This editor is now the Primary Editor.");
-    }
-  }, toThisWindow);
-
   // Application shutdown is deliberately serialized. Rust asks one editor at
   // a time to resolve its document; only after that editor closes does the
   // next editor receive this event. This prevents a pile of simultaneous Save
@@ -389,13 +383,9 @@ function bindMenuEvents() {
 }
 
 // Guards against a single conceptual activation of "Make This Editor
-// Primary" reaching this function more than once -- native menu clicks can
-// be re-delivered by assistive technology (see the equivalent guard in
-// confirmPrimaryReassignment below), and this request is not otherwise
-// idempotent while it's in flight: a second overlapping call would still
-// see no Primary yet set, skip the confirmation branch, and separately
-// invoke set_current_editor_primary and set_current_editor_primary's own
-// "primary-editor-confirmed" announcement again.
+// Primary" reaching this function more than once. Native menu clicks can
+// be re-delivered by assistive technology, so only one transfer request may
+// be in flight at a time.
 let primaryRequestInFlight = false;
 
 async function requestMakePrimaryEditor() {

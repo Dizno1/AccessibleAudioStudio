@@ -1565,11 +1565,10 @@ fn set_current_editor_primary(window: tauri::WebviewWindow, app: tauri::AppHandl
         }
     }
 
-    // Only the editor that actually gained the role announces the change.
-    // Re-selecting the same Primary is intentionally silent.
-    if old_label.as_deref() != Some(new_label.as_str()) {
-        let _ = window.emit_to(new_label.as_str(), "primary-editor-confirmed", new_label.clone());
-    }
+    // Primary status is persistent state, exposed in the native window title.
+    // Do not emit a separate spoken confirmation event. The explicit user
+    // action and resulting title change are sufficient, and focus/window
+    // synchronization must remain silent.
     Ok(())
 }
 

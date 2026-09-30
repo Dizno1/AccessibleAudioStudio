@@ -2924,6 +2924,11 @@ Quit/shutdown serialization (`continue_application_shutdown`) now behaves
 one-editor-at-a-time as intended, since its own `emit_to` fix has the same
 "needs a real multi-window session" limitation.
 
+
+## 0.2.9a - Primary Editor announcement cleanup
+
+Real Windows/JAWS testing confirmed that 0.2.9 fixed Primary ownership and native title synchronization: explicit transfers left exactly one editor titled `Primary Editor`. The remaining defect was an unnecessary spoken `primary-editor-confirmed` event that could be heard again when visiting secondary windows. The event emission and frontend listener were removed. Primary synchronization is now silent; the native title is the persistent status indicator. No audio editing, Save, shutdown, or workstation navigation behavior changed in this patch.
+
 ## 0.2.9 — Primary Editor, part two: the fix was real but only half-applied
 
 0.2.8 shipped a real, correct, confirmed fix — and the regression test
