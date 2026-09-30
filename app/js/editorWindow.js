@@ -308,6 +308,21 @@ function bindMenuEvents() {
   if (!isRunningInTauri()) return;
   const { listen } = window.__TAURI__.event;
 
+  // Every listen() below passes { target: currentLabel }. Without it, Tauri's
+  // own JS client defaults a listener's target to { kind: "Any" } -- and, per
+  // Tauri's own event-matching logic (listeners.rs: a target of Any always
+  // matches, regardless of what the emitter targeted), a plain, untargeted
+  // listen() receives EVERY emit of that event name app-wide, including ones
+  // Rust sent via emit_to() to a completely different window. Rust-side
+  // emit_to() scopes the SEND; this scopes the RECEIVE -- both are required,
+  // and this was the missing half: every open editor's identical, unscoped
+  // "menu-action" listener was still firing for every other editor's menu
+  // clicks (most visibly, "Make This Editor Primary"), independent of which
+  // window Rust actually emitted to. See docs/Pro Roadmap.md, "Primary
+  // Editor architecture," 0.2.9 entry.
+  const currentLabel = window.__TAURI__.window.getCurrentWindow().label;
+  const toThisWindow = { target: currentLabel };
+
   listen("menu-action", async (event) => {
     const id = event.payload;
     if (id === "makePrimaryEditor") {
@@ -330,25 +345,24 @@ function bindMenuEvents() {
       return;
     }
     await triggerAction(id);
-  });
+  }, toThisWindow);
 
   listen("menu-action-unavailable", (event) => {
     if (event.payload === "goToPrimaryEditor") {
       announceAlert("No Primary Editor is currently set. Use Make This Editor Primary on another editor window first.");
     }
-  });
+  }, toThisWindow);
 
   listen("primary-editor-state-changed", async (event) => {
-    const currentLabel = window.__TAURI__.window.getCurrentWindow().label;
     isPrimaryEditor = event.payload === currentLabel;
     await updateWindowTitle();
-  });
+  }, toThisWindow);
 
   listen("primary-editor-confirmed", (event) => {
-    if (event.payload === window.__TAURI__.window.getCurrentWindow().label) {
+    if (event.payload === currentLabel) {
       announceStatus("This editor is now the Primary Editor.");
     }
-  });
+  }, toThisWindow);
 
   // Application shutdown is deliberately serialized. Rust asks one editor at
   // a time to resolve its document; only after that editor closes does the
@@ -371,34 +385,50 @@ function bindMenuEvents() {
       try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
       announceAlert("Quit canceled because this document could not be saved.");
     }
-  });
+  }, toThisWindow);
 }
+
+// Guards against a single conceptual activation of "Make This Editor
+// Primary" reaching this function more than once -- native menu clicks can
+// be re-delivered by assistive technology (see the equivalent guard in
+// confirmPrimaryReassignment below), and this request is not otherwise
+// idempotent while it's in flight: a second overlapping call would still
+// see no Primary yet set, skip the confirmation branch, and separately
+// invoke set_current_editor_primary and set_current_editor_primary's own
+// "primary-editor-confirmed" announcement again.
+let primaryRequestInFlight = false;
 
 async function requestMakePrimaryEditor() {
   if (!isRunningInTauri() || !activeDoc) return;
-  const { invoke } = window.__TAURI__.core;
-  const currentWindow = window.__TAURI__.window.getCurrentWindow();
-  const info = await invoke("get_primary_editor_info");
+  if (primaryRequestInFlight) return;
+  primaryRequestInFlight = true;
+  try {
+    const { invoke } = window.__TAURI__.core;
+    const currentWindow = window.__TAURI__.window.getCurrentWindow();
+    const info = await invoke("get_primary_editor_info");
 
-  if (info.label === currentWindow.label) {
-    announceStatus("This editor is already the Primary Editor.");
-    return;
+    if (info.label === currentWindow.label) {
+      announceStatus("This editor is already the Primary Editor.");
+      return;
+    }
+
+    if (info.label) {
+      const currentName = (info.title || "the current Primary Editor")
+        .replace(" - Primary Editor - AccessibleAudioStudio Pro", "")
+        .replace(" - AccessibleAudioStudio Pro", "");
+      const proposedName = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
+      const confirmed = await confirmPrimaryReassignment(proposedName, currentName);
+      if (!confirmed) return;
+    }
+
+    await invoke("set_current_editor_primary");
+    // Do not wait for a cross-window event to make this editor reflect the
+    // authoritative result. The command was invoked by this exact window.
+    isPrimaryEditor = true;
+    await updateWindowTitle();
+  } finally {
+    primaryRequestInFlight = false;
   }
-
-  if (info.label) {
-    const currentName = (info.title || "the current Primary Editor")
-      .replace(" - Primary Editor - AccessibleAudioStudio Pro", "")
-      .replace(" - AccessibleAudioStudio Pro", "");
-    const proposedName = activeDoc.baseName || activeDoc.title.replace(" - AccessibleAudioStudio Pro", "");
-    const confirmed = await confirmPrimaryReassignment(proposedName, currentName);
-    if (!confirmed) return;
-  }
-
-  await invoke("set_current_editor_primary");
-  // Do not wait for a cross-window event to make this editor reflect the
-  // authoritative result. The command was invoked by this exact window.
-  isPrimaryEditor = true;
-  await updateWindowTitle();
 }
 
 function confirmPrimaryReassignment(proposedName, currentName) {

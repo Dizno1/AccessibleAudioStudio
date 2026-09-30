@@ -11,9 +11,9 @@ and still fully functional; everything below is additive.
 AccessibleAudioStudio Pro is a master-detail application. This section is
 the invariant a future developer or AI coding assistant must not violate
 when touching anything related to the Primary Editor. It was made explicit
-here in 0.2.8 after a real bug (see the 0.2.8 changelog entry below) let
-that invariant be silently broken without any single line of code
-"deciding" to break it.
+here in 0.2.8, and corrected again in 0.2.9, after two real bugs (see the
+0.2.8 and 0.2.9 changelog entries below) let that invariant be silently
+broken without any single line of code "deciding" to break it.
 
 **There is exactly one authoritative `primaryEditorId`, and it lives only
 in Rust**, as `PrimaryEditorState(Mutex<Option<String>>)` in
@@ -53,8 +53,22 @@ in Rust**, as `PrimaryEditorState(Mutex<Option<String>>)` in
   (and `AppHandle::emit()`) broadcast to every window in the app — this is
   a real, confirmed difference from Tauri v1, not an assumption — so a bare
   `.emit()` where only one recipient is intended will silently reach every
-  other open editor too. This was the actual root cause of the 0.2.8 bug
-  and is the single easiest way to reintroduce it.
+  other open editor too. This was the root cause of the 0.2.8 bug.
+- **Every JS `listen(...)` call receiving a window-targeted event must pass
+  a matching `{ target: <this window's own label> }` as its third argument,
+  never call `listen(event, handler)` with no options.** This is the other
+  half of the same problem, and the part 0.2.8 missed: Tauri's own JS
+  client defaults an option-less `listen()`'s target to `{ kind: "Any" }`,
+  and Tauri's event-matching logic (confirmed directly from the `tauri`
+  crate's own source, `src/event/listener.rs`: `*target == EventTarget::Any
+  || filter(...)`) delivers to an `Any`-target listener regardless of what
+  the emitter's `emit_to(...)` targeted. `emit_to` scopes the *send*;
+  `listen(..., { target })` scopes the *receive*; a correct single-recipient
+  notification needs both, or the unscoped `listen()` still receives every
+  copy of that event any window emits. This was the root cause of the 0.2.9
+  bug — 0.2.8's `emit_to` fix was real and necessary, but every receiving
+  `listen()` call in the app was still `{ kind: "Any" }`, so it changed
+  nothing observable.
 
 If you need to know whether a given window is Primary, the true answer is
 always `editorId == primaryEditorId` as tracked by Rust. Anything else is
@@ -2910,17 +2924,219 @@ Quit/shutdown serialization (`continue_application_shutdown`) now behaves
 one-editor-at-a-time as intended, since its own `emit_to` fix has the same
 "needs a real multi-window session" limitation.
 
+## 0.2.9 — Primary Editor, part two: the fix was real but only half-applied
+
+0.2.8 shipped a real, correct, confirmed fix — and the regression test
+still failed, in essentially the same way. This entry traces why, on the
+*receiving* side this time, per the explicit direction given after 0.2.8's
+real-world test: "Your targeted emit fix improved the initiating command
+path, but the minimal regression test still fails... Investigate the
+receiving/synchronization side of Primary state."
+
+### Observed failure (0.2.8, real Windows/JAWS test)
+
+Three files opened, a new Untitled editor created, Untitled made Primary
+exactly once via the menu, no other action taken. JAWS announced "This
+editor is now the Primary Editor" four times. Without any further explicit
+transfer, Slow JAWS.mp3 later carried " - Primary Editor - " in its actual
+OS window title at the same time Untitled Audio 1 still did, and both Slow
+down and Fast JAWS announced becoming Primary on their own.
+
+### Root cause
+
+**Confirmed directly against the actual `tauri` crate source (v2.11.5, the
+version this project's `Cargo.lock` pins) and the actual `@tauri-apps/api`
+JS package source (v2.12.1) — not the published docs, which describe this
+imprecisely, and not memory.**
+
+`emit_to(label, ...)` (0.2.8's fix) correctly scopes *what Rust sends* — it
+tags the outgoing event with a target. It does not, by itself, restrict
+*who receives it*. That depends on what each `listen()` call registered as
+its own target when it subscribed, and every `listen(event, handler)` call
+in this codebase was called with no third `options` argument anywhere.
+`@tauri-apps/api`'s `event.js` shows the consequence directly:
+
+```js
+async function listen(event, handler, options) {
+    const target = typeof (options?.target) === 'string'
+        ? { kind: 'AnyLabel', label: options.target }
+        : (options?.target ?? { kind: 'Any' });   // <- the default, when omitted
+    return invoke('plugin:event|listen', { event, target, ... })...
+}
+```
+
+An omitted `options.target` becomes `{ kind: "Any" }`. And the Rust side's
+own event-matching function (`tauri`'s `src/event/listener.rs`,
+`match_any_or_filter`) treats that as a standing wildcard, independent of
+what the emitter targeted:
+
+```rust
+fn match_any_or_filter<F: Fn(&EventTarget) -> bool>(target: &EventTarget, filter: &Option<F>) -> bool {
+  *target == EventTarget::Any || filter.as_ref().map(|f| f(target)).unwrap_or(true)
+}
+```
+
+`target` here is the *listener's* registered target. If it's `Any`, the
+function returns `true` unconditionally — before the emitter's filter
+closure (built from its `emit_to` target) is even consulted. In plain
+terms: **every `listen()` call in this app, having never specified a
+target, received every event of that name regardless of which window
+Rust's `emit_to` actually named.** 0.2.8's fix changed what Rust *sent*
+without changing what any window was actually *subscribed to* — so nothing
+observable changed.
+
+Concretely, for the reported symptom: clicking "Make This Editor Primary"
+in Untitled's own native menu correctly made Rust compute
+`owner_label = "editor-N"` (Untitled) and call
+`window.emit_to(owner_label, "menu-action", "makePrimaryEditor")` — but
+because every other open editor's `listen("menu-action", ...)` was *also*
+registered with the default `Any` target, **every other open editor
+received that exact same "menu-action":"makePrimaryEditor" event and ran
+`requestMakePrimaryEditor()` in its own window, against its own document,
+using its own real window label.** Each one that raced ahead of the others
+called the real `set_current_editor_primary` command from its own window
+context — which is *not* a spoofed or misattributed call; Rust correctly
+attributes each invocation to whichever window's JS actually made it — and
+each optimistically set its own local `isPrimaryEditor = true` and updated
+its own title immediately, without waiting for Rust's broadcast to confirm
+it. That is why Slow JAWS.mp3 could legitimately end up as the Rust-side
+Primary (it really did call the real command), while Untitled's window
+still locally displayed Primary too (its own optimistic local update was
+never told otherwise by a later broadcast reaching it correctly — which,
+per the same root cause, it should have, but timing among several racing,
+identically-unscoped listeners was not something to rely on). The
+quadruple announcement in Untitled is explained by the same leak: a single
+click was very likely also re-delivered to Untitled's own listener more
+than once by the native menu/AT activation path (a known, already-
+commented-on category of issue elsewhere in this file's
+`confirmPrimaryReassignment` — "native menu events can be re-announced or
+reactivated by assistive technology"), and nothing guarded
+`requestMakePrimaryEditor()` against concurrent re-entry.
+
+### Architectural assessment
+
+Unchanged from 0.2.8: one authoritative `primaryEditorId` in Rust, never
+duplicated as independent per-window authority. Both 0.2.8's and 0.2.9's
+bugs are entirely about event *delivery* — the send half, then the receive
+half — not about the state model itself.
+
+### Fix
+
+1. **`app/js/editorWindow.js`**: every `listen(...)` call in `bindMenuEvents()`
+   (`menu-action`, `menu-action-unavailable`, `primary-editor-state-changed`,
+   `primary-editor-confirmed`, `application-close-requested`) now passes
+   `{ target: currentLabel }`, where `currentLabel` is this window's own
+   label, read once at the top of the function.
+2. **`app/js/audioEditorLauncher.js`**: its own `listen("menu-action", ...)`
+   (Recording Studio's window) now passes `{ target: "main" }`, and its
+   switch gained an explicit `"goToPrimaryEditor"` case that calls
+   `triggerAction("goToPrimaryEditor")` — reusing the action already
+   registered in `registerAudioEditorLauncherShortcuts()` rather than a
+   second implementation (see next point).
+3. **`app/js/main.js`**: removed `bindNativeMenuEvents()` and its own
+   separate `goToPrimaryEditor()`, and the dead
+   `registerAction("goToPrimaryEditor", ...)` inside `registerShortcutActions()`.
+   This was a second, independent implementation of the same menu item and
+   keyboard action, already silently losing to
+   `audioEditorLauncher.js`'s registration for the keyboard path
+   (`registerAction` just overwrites by key, and
+   `registerAudioEditorLauncherShortcuts()` ran after
+   `registerShortcutActions()`) and only still doing anything at all for
+   the *menu* click because it had its own separate, equally unscoped
+   `listen()`. A stale, competing path — removed outright rather than left
+   beside the one that's actually used, consistent with how
+   `clear_primary_editor_if_current` was handled in 0.2.8.
+4. **`app/js/editorWindow.js`**: added a simple in-flight guard
+   (`primaryRequestInFlight`) around `requestMakePrimaryEditor()` so a
+   single action reaching it more than once concurrently — whether from a
+   genuine AT double-activation of the native menu, or any other cause —
+   cannot start two overlapping Primary-transfer attempts from the same
+   window.
+
+`src-tauri/src/main.rs` was **not** changed this round. 0.2.8's `emit_to`
+fix was correct and remains necessary — it's just not sufficient on its
+own, and nothing about it needed reverting.
+
+### Tauri lifecycle findings
+
+The specific finding this round: **Tauri v2's `emit_to` and a plain
+`listen()` are not a matched pair.** `emit_to` alone provides no delivery
+guarantee; a receiver has to explicitly opt into the scoping by passing
+the matching `target` option, or it remains a global sniffer for that
+event name regardless of how carefully the sender scoped it. This is easy
+to miss because nothing fails or warns — the mismatched pairing compiles,
+runs, and silently behaves as if `emit_to` were never used at all. Also
+newly confirmed as a real, separate defect (not the main symptom, but
+found while tracing every menu-action listener per the assignment's own
+checklist item "multiple event listeners... duplicated event
+subscriptions"): the Recording Studio window had two independent,
+unscoped `"menu-action"` listeners running simultaneously
+(`main.js`'s `bindNativeMenuEvents()` and `audioEditorLauncher.js`'s
+`bindMenuEvents()`), left over from before the native-menu architecture
+consolidated into `audioEditorLauncher.js`.
+
+### Regression protection
+
+With every window-scoped `listen()` now actually scoped, a "menu-action"
+(or any other window-targeted event) emitted via `emit_to(label, ...)` can
+only ever reach the one listener registered with a matching target — Rust
+will not deliver it elsewhere, confirmed from the crate's own matching
+logic, not inferred from behavior. Opening additional editor windows
+cannot cause them to react to another window's menu activity, because
+each new window's own `bindMenuEvents()` call reads its own label at
+registration time and scopes accordingly. The in-flight guard independently
+protects against a single window acting on the same request twice.
+
+### Accessibility impact
+
+No keyboard shortcut, menu wording, menu structure, announcement text, or
+Ctrl+PageUp/Ctrl+PageDown navigation changed. The practical effect: a
+menu action taken in one editor should no longer be silently repeated in
+every other open editor, and "Make This Editor Primary" should no longer
+produce multiple simultaneous "now Primary" announcements or leave more
+than one window's title reading Primary at once.
+
+### Testing
+
+**Locally verified:** the claims about `listen()`'s default target and
+Tauri's target-matching logic were checked against the actual shipped
+source of both `@tauri-apps/api@2.12.1` (downloaded via `npm pack`) and
+the `tauri` crate `2.11.5` (downloaded via `crates.io`'s own crate-download
+API) — not the hosted documentation, which this round's investigation
+found describes the client-side default imprecisely. All 10 pre-existing
+JS tests still pass, unchanged. Full JS syntax check across every file in
+`app/js/`. `git diff --stat` confirms this round touched only
+`app/js/editorWindow.js`, `app/js/audioEditorLauncher.js`, and
+`app/js/main.js` — `src-tauri/src/main.rs` untouched.
+
+**Not verified:** an actual Rust compile (unnecessary this round — no Rust
+changed) and, as with 0.2.8, an actual installed Windows/JAWS run. This is
+a JS-only change and syntactically clean, but the exact regression
+scenario from the original assignment still needs to be re-run for real:
+open three files, create Untitled, make Untitled Primary once, visit every
+other editor in sequence, confirm exactly one "now Primary" announcement
+occurred and exactly one window's title reads Primary throughout.
+
 ## Recommended next phase
 
-Get 0.2.8 through a real Windows build (GitHub Actions) and, ideally,
-one real multi-window JAWS pass against the regression scenario above —
-this is the first build in this line to touch application-wide event
-delivery, so it deserves a real look before moving on. Separately, and
-unrelated to this build: build #31's Windows/JAWS verification for the
-0.2.7.4 HWND fix is still outstanding and hasn't been folded into this
-round — if it already ran, its raw result (and, if it failed, the raw
-compiler text) should come back before further work stacks on top of
-either the HWND fix or this one. Once both are confirmed, the substantial
-remaining 0.2.7 scope (README rewrite, the requested test additions,
-Layer 3 contextual shortcut help, Recording Studio parity, dynamic
-menu-item state) is the natural next increment.
+Re-run the exact minimal regression scenario against 0.2.9 first, since
+it's now small and fast (open 3 files, New Untitled, make Untitled Primary
+once, visit every other editor, check for a single announcement and a
+single Primary title) — the first sixty seconds after making Untitled
+Primary should tell the story. If it still fails, get the exact JAWS
+transcript again rather than a paraphrase; between 0.2.8 and 0.2.9 the
+value of an exact reproduction (not a summarized description) has been
+what actually found the real bug twice in a row. If it passes, do one
+full pass of the rest of the original assignment's scenario (explicit
+transfer from a secondary editor, closing the Primary editor, closing a
+secondary editor) before calling the Primary Editor architecture closed.
+
+Separately, and unrelated to either Primary build: build #31's
+Windows/JAWS verification for the 0.2.7.4 HWND fix is still outstanding
+and hasn't been folded into either round — if it already ran, its raw
+result (and, if it failed, the raw compiler text) should come back before
+further work stacks on top of the HWND fix. Once the Primary Editor
+scenario and the HWND build are both confirmed, the substantial remaining
+0.2.7 scope (README rewrite, the requested test additions, Layer 3
+contextual shortcut help, Recording Studio parity, dynamic menu-item
+state) is the natural next increment.
