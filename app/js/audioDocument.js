@@ -35,8 +35,8 @@ export class AudioDocument {
    *   architectural milestone. Documented as a known gap versus 0.1.x's duplicate-file
    *   protection, not silently dropped.
    */
-  constructor({ buffer, baseName, sourceExtension, isNew = false, sourceKey = null }) {
-    this.id = "doc-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+  constructor({ buffer, baseName, sourceExtension, isNew = false, sourceKey = null, displayNumber = null, documentId = null }) {
+    this.id = documentId || ("doc-" + Date.now() + "-" + Math.random().toString(16).slice(2));
     this.buffer = buffer;
     this.baseName = baseName;
     this.sourceExtension = sourceExtension || "wav";
@@ -51,7 +51,7 @@ export class AudioDocument {
     this.selection = null; // { startSec, endSec } | null
     this.cursorSec = 0;
 
-    this._displayNumber = isNew ? nextDocNumber++ : null;
+    this._displayNumber = isNew ? (displayNumber ?? nextDocNumber++) : null;
   }
 
   /** Accessible document title, e.g. "Interview.wav - AccessibleAudioStudio Pro". */

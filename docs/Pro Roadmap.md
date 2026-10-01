@@ -3145,3 +3145,23 @@ scenario and the HWND build are both confirmed, the substantial remaining
 0.2.7 scope (README rewrite, the requested test additions, Layer 3
 contextual shortcut help, Recording Studio parity, dynamic menu-item
 state) is the natural next increment.
+
+## 0.2.10 save-contract and document-identity repair (pending Windows verification)
+
+This pass is deliberately narrow. It does not change selection, playback, clipboard editing, or Primary Editor behavior.
+
+- New editor identity now comes from the Recording Studio/Rust master. The Rust-assigned `Untitled Audio N` number is passed into the editor's `AudioDocument`; a child editor no longer invents its own per-window Untitled number. The Tauri window label is also used as the stable document ID in the master registry.
+- The audio workspace no longer constructs `USERPROFILE\\Documents`. On Windows it resolves the operating system's known Documents folder and then uses `AccessibleAudioStudio\\Audio` beneath it. This is intended to honor Windows folder redirection, including a OneDrive-backed Documents folder.
+- Native Save As is owned by the editor window that requested it rather than by the Recording Studio window.
+- Native Save As supplies the appropriate default extension (`.wav` or `.mp3`) when the user enters a basename without one.
+- All Rust-side audio writes now reject empty encoded data and verify the written file's byte length before returning success. The frontend therefore cannot mark the document clean or announce a successful save unless the native write command returns success.
+- Save cancellation and failure continue to leave the document dirty. During Save and Quit, either condition cancels application shutdown.
+
+Windows verification required before this is considered complete:
+
+1. Confirm the Save As dialog starts in the user's actual Windows Documents location under `AccessibleAudioStudio\\Audio` (for a redirected Documents folder, verify the redirected path rather than `C:\\Users\\<user>\\Documents`).
+2. Type a filename without an extension and press Enter. Confirm a nonzero `.wav` or `.mp3` file exists and plays.
+3. Verify `Ctrl+S`, `File > Save`, and `Save and Quit` all obey the same success/failure contract for an Untitled document.
+4. Cancel Save As during Save and Quit and confirm the entire shutdown is canceled and the document remains dirty.
+5. Create at least two new documents. Confirm `Untitled Audio 1`, `Untitled Audio 2`, etc. remain stable through Primary Editor changes, Alt+Tab, edits, saves in other documents, and state synchronization.
+6. Verify `clean -> edit -> dirty -> Undo -> clean` still removes `(unsaved changes)`.

@@ -1322,22 +1322,60 @@ fn focus_current_editor(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 
+#[cfg(windows)]
+fn windows_documents_dir() -> Result<PathBuf, String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Documents, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+
+    let raw = unsafe { SHGetKnownFolderPath(&FOLDERID_Documents, KF_FLAG_DEFAULT, HANDLE::default()) }
+        .map_err(|e| format!("Windows Documents folder is unavailable: {e}"))?;
+    let text = unsafe { raw.to_string() }
+        .map_err(|e| format!("Windows Documents folder could not be read: {e}"));
+    unsafe { CoTaskMemFree(Some(raw.as_ptr() as *const std::ffi::c_void)); }
+    text.map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn windows_documents_dir() -> Result<PathBuf, String> {
+    let profile = std::env::var("HOME")
+        .map_err(|_| "User home folder is unavailable.".to_string())?;
+    Ok(PathBuf::from(profile).join("Documents"))
+}
+
+fn audio_workspace_dir() -> Result<PathBuf, String> {
+    Ok(windows_documents_dir()?.join("AccessibleAudioStudio").join("Audio"))
+}
+
+fn verify_audio_write(path: &std::path::Path, expected_len: usize) -> Result<(), String> {
+    if expected_len == 0 {
+        return Err("The encoded audio contained no data, so nothing was saved.".to_string());
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("The saved audio file could not be verified: {e}"))?;
+    if metadata.len() == 0 || metadata.len() != expected_len as u64 {
+        return Err(format!(
+            "The audio file write could not be verified (expected {} bytes, found {} bytes).",
+            expected_len, metadata.len()
+        ));
+    }
+    Ok(())
+}
+
+fn write_verified_audio(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("The encoded audio contained no data, so nothing was saved.".to_string());
+    }
+    fs::write(path, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    verify_audio_write(path, bytes.len())
+}
+
 #[tauri::command]
 fn save_audio_to_workspace(filename: String, bytes: Vec<u8>) -> Result<String, String> {
-    // AccessibleAudioStudio owns a predictable workspace instead of relying on
-    // the WebView download folder. Project persistence will grow beneath this
-    // root in later builds; current audio saves live in Audio.
-    let profile = std::env::var("USERPROFILE")
-        .map_err(|_| "Windows user profile folder is unavailable.".to_string())?;
-    let workspace = PathBuf::from(profile)
-        .join("Documents")
-        .join("AccessibleAudioStudio")
-        .join("Audio");
+    let workspace = audio_workspace_dir()?;
     fs::create_dir_all(&workspace)
         .map_err(|e| format!("Could not create AccessibleAudioStudio workspace: {e}"))?;
 
-    // A save name is a basename only. Never allow a document name to escape
-    // the application workspace through path separators.
     let safe_name: String = filename.chars()
         .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '_' } else { c })
         .collect();
@@ -1346,16 +1384,13 @@ fn save_audio_to_workspace(filename: String, bytes: Vec<u8>) -> Result<String, S
         return Err("Enter a file name before saving.".to_string());
     }
     let path = workspace.join(safe_name);
-    fs::write(&path, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    write_verified_audio(&path, &bytes)?;
     Ok(path.to_string_lossy().to_string())
 }
 
-
-
 #[cfg(windows)]
-fn save_audio_as_native_impl(app: &tauri::AppHandle, suggested_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
-    use tauri::Manager;
-    use windows::core::PWSTR;
+fn save_audio_as_native_impl(window: &tauri::WebviewWindow, suggested_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_HIDEREADONLY,
@@ -1365,21 +1400,20 @@ fn save_audio_as_native_impl(app: &tauri::AppHandle, suggested_name: &str, bytes
 
     fn to_wide(s: &str) -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() }
 
-    let profile = std::env::var("USERPROFILE")
-        .map_err(|_| "Windows user profile folder is unavailable.".to_string())?;
-    let workspace = PathBuf::from(profile).join("Documents").join("AccessibleAudioStudio").join("Audio");
+    let workspace = audio_workspace_dir()?;
     fs::create_dir_all(&workspace)
         .map_err(|e| format!("Could not create AccessibleAudioStudio workspace: {e}"))?;
 
-    let owner_hwnd: HWND = app.get_webview_window("main")
-        .and_then(|w| w.window_handle().ok().and_then(|handle| match handle.as_raw() {
-            raw_window_handle::RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut std::ffi::c_void)),
-            _ => None,
-        })).unwrap_or_default();
+    let owner_hwnd: HWND = window.window_handle().ok().and_then(|handle| match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut std::ffi::c_void)),
+        _ => None,
+    }).unwrap_or_default();
 
     let filter = to_wide("WAV audio\0*.wav\0MP3 audio\0*.mp3\0All Files\0*.*\0\0");
     let title = to_wide("Save Audio As");
     let initial_dir = to_wide(&workspace.to_string_lossy());
+    let default_ext = if suggested_name.to_ascii_lowercase().ends_with(".mp3") { "mp3" } else { "wav" };
+    let default_ext_wide = to_wide(default_ext);
     let mut file_buffer: Vec<u16> = vec![0u16; 32768];
     let suggested = to_wide(suggested_name);
     let copy_len = suggested.len().min(file_buffer.len());
@@ -1388,11 +1422,12 @@ fn save_audio_as_native_impl(app: &tauri::AppHandle, suggested_name: &str, bytes
     let mut ofn = OPENFILENAMEW::default();
     ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
     ofn.hwndOwner = owner_hwnd;
-    ofn.lpstrFilter = windows::core::PCWSTR(filter.as_ptr());
+    ofn.lpstrFilter = PCWSTR(filter.as_ptr());
     ofn.lpstrFile = PWSTR(file_buffer.as_mut_ptr());
     ofn.nMaxFile = file_buffer.len() as u32;
-    ofn.lpstrInitialDir = windows::core::PCWSTR(initial_dir.as_ptr());
-    ofn.lpstrTitle = windows::core::PCWSTR(title.as_ptr());
+    ofn.lpstrInitialDir = PCWSTR(initial_dir.as_ptr());
+    ofn.lpstrTitle = PCWSTR(title.as_ptr());
+    ofn.lpstrDefExt = PCWSTR(default_ext_wide.as_ptr());
     ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
     let succeeded = unsafe { GetSaveFileNameW(&mut ofn) };
@@ -1403,17 +1438,17 @@ fn save_audio_as_native_impl(app: &tauri::AppHandle, suggested_name: &str, bytes
     }
     let end = file_buffer.iter().position(|&c| c == 0).unwrap_or(file_buffer.len());
     let path = PathBuf::from(String::from_utf16_lossy(&file_buffer[..end]));
-    fs::write(&path, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    write_verified_audio(&path, bytes)?;
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
-fn save_audio_as_native(app: tauri::AppHandle, suggested_name: String, bytes: Vec<u8>) -> Result<Option<String>, String> {
+fn save_audio_as_native(window: tauri::WebviewWindow, suggested_name: String, bytes: Vec<u8>) -> Result<Option<String>, String> {
     #[cfg(windows)]
-    { return save_audio_as_native_impl(&app, &suggested_name, &bytes); }
+    { return save_audio_as_native_impl(&window, &suggested_name, &bytes); }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = window;
         let path = save_audio_to_workspace(suggested_name, bytes)?;
         Ok(Some(path))
     }
@@ -1423,7 +1458,7 @@ fn save_audio_as_native(app: tauri::AppHandle, suggested_name: String, bytes: Ve
 fn save_audio_to_path(path: String, bytes: Vec<u8>) -> Result<String, String> {
     let target = PathBuf::from(&path);
     if target.as_os_str().is_empty() { return Err("No save destination is available.".to_string()); }
-    fs::write(&target, bytes).map_err(|e| format!("Could not save audio: {e}"))?;
+    write_verified_audio(&target, &bytes)?;
     Ok(target.to_string_lossy().to_string())
 }
 

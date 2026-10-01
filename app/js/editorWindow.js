@@ -115,11 +115,14 @@ async function loadDocumentForThisWindow() {
     // info: { kind: "file" | "new", name, path, data }
 
     if (info.kind === "new") {
+      const displayNumber = Number(String(info.name || "").replace(/^Untitled Audio\s+/, "")) || null;
       activeDoc = new AudioDocument({
         buffer: bufUtil.createEmptyBuffer(44100, 2),
         baseName: null,
         sourceExtension: "wav",
         isNew: true,
+        displayNumber,
+        documentId: window.__TAURI__.window.getCurrentWindow().label,
       });
     } else {
       const file = new File([new Uint8Array(info.data)], info.name);
@@ -130,6 +133,7 @@ async function loadDocumentForThisWindow() {
         baseName: info.name,
         sourceExtension: extension,
         sourceKey: info.path || info.name,
+        documentId: window.__TAURI__.window.getCurrentWindow().label,
       });
     }
 
