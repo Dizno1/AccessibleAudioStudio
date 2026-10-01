@@ -339,6 +339,7 @@ previous attempt's own diagnostics actually proved, not a guess:
 ### Current test build notes - v0.2.7.20
 
 - Application shutdown is now initiated and confirmed in the Recording Studio window. If dirty editor windows exist, the Recording Studio lists them in one modal with Save and Quit, Don't Save and Quit, and Cancel.
+- The shutdown modal also includes every dirty document name directly in its described message, so a screen reader announces the affected file name or names when the dialog opens and focus lands on Save and Quit. The visible list remains available for review.
 - Save and Quit preserves the existing serialized per-document save flow. Don't Save and Quit destroys all editor windows and the Recording Studio together. Cancel leaves every window open.
 - Dirty state now follows the last open/save buffer checkpoint. Undoing exactly back to that checkpoint clears the `(unsaved changes)` marker; redoing away from it restores the marker.
 - Audio editing, selection, clipboard, trimming, playback, and Primary Editor behavior were intentionally not changed in this pass.

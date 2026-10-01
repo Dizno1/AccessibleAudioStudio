@@ -42,9 +42,10 @@ async function bindApplicationCloseProtection() {
 
 
 function showApplicationQuitDialog(names) {
+  const documentNames = names.join(", ");
   el.quitMessage.textContent = names.length === 1
-    ? "AccessibleAudioStudio Pro has 1 unsaved audio document."
-    : `AccessibleAudioStudio Pro has ${names.length} unsaved audio documents.`;
+    ? `AccessibleAudioStudio Pro has 1 unsaved audio document: ${documentNames}.`
+    : `AccessibleAudioStudio Pro has ${names.length} unsaved audio documents: ${documentNames}.`;
   el.quitDocumentList.replaceChildren(...names.map((name) => {
     const li = document.createElement("li"); li.textContent = name; return li;
   }));

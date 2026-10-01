@@ -3165,3 +3165,15 @@ Windows verification required before this is considered complete:
 4. Cancel Save As during Save and Quit and confirm the entire shutdown is canceled and the document remains dirty.
 5. Create at least two new documents. Confirm `Untitled Audio 1`, `Untitled Audio 2`, etc. remain stable through Primary Editor changes, Alt+Tab, edits, saves in other documents, and state synchronization.
 6. Verify `clean -> edit -> dirty -> Undo -> clean` still removes `(unsaved changes)`.
+
+
+## Shutdown modal dirty-document announcement repair (pending Windows/JAWS verification)
+
+The Recording Studio shutdown modal now puts the dirty document name or names directly into the text referenced by `aria-describedby`. Focus still moves to `Save and Quit`, and the existing visible document list remains in the dialog. This targets the JAWS result where the modal announced only the count and button; the user had to turn the Virtual PC Cursor on and arrow backward to discover which document was dirty.
+
+Required verification:
+
+1. Make one document dirty and close the application. Confirm JAWS announces the modal purpose, the dirty document name, and the focused `Save and Quit` button without requiring Virtual PC Cursor navigation.
+2. Repeat with multiple dirty documents and confirm all dirty document names are announced when the modal opens.
+3. Confirm `Save and Quit`, `Don't Save and Quit`, and `Cancel` retain their existing behavior.
+4. Confirm the visible dirty-document list is still available when reviewing the dialog with the Virtual PC Cursor.
