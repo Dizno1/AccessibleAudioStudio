@@ -3220,3 +3220,18 @@ On a OneDrive-redirected Documents installation, this resolves through the same 
 5. Return `audio-load-diagnostics.log` with the observed JAWS history. The key question is whether the log ends at read/transfer/decode start, records a 20-second timeout, later records `decode-late-success`, reaches `editor-ready`, or stops at another boundary.
 
 This instrumentation is evidence-gathering only. No conclusion that the long-file decode and idle freeze share one root cause should be made until the log demonstrates it.
+
+
+## 0.2.14 large-document loading boundary
+
+The 0.2.13 large-MP3 test proved that native decoding itself completes correctly, but returning the entire decoded PCM document as one base64 Tauri IPC response can crash WebView2 with STATUS_BREAKPOINT. The same failure can then reload the editor and make the already-consumed source appear missing.
+
+0.2.14 changes the boundary rather than adding another duplicate-request guard. Native MP3 decode writes PCM to a temporary per-editor cache and returns metadata only. The editor creates its AudioBuffer and requests bounded PCM chunks from Rust. This removes the single roughly 650 MB base64 response produced by a 46-minute mono document and avoids holding a second base64 copy of the complete decoded audio.
+
+Native decode is idempotent per editor and source path. If the same decode request is repeated, Rust returns the existing cache metadata instead of decoding the file again.
+
+The pending editor source is no longer consumed at initialization. It is acknowledged and removed only after the editor reaches ready state. If WebView2 reloads during loading, the editor can retry the same source rather than failing with no registered source.
+
+Loading announcements remain document-local. During chunk transfer the editor announces genuine 10-percent preparation milestones based on PCM frames actually copied. No synthetic progress percentages are used.
+
+The temporary PCM cache is released after editor-ready.

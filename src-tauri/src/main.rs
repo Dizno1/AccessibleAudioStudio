@@ -4,10 +4,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use serde::Serialize;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -886,6 +886,7 @@ fn is_supported_extension(path: &std::path::Path) -> bool {
 /// URL — window labels are already unique and stable, and this avoids
 /// needing to percent-encode arbitrary Windows paths (spaces, backslashes,
 /// non-ASCII filenames) into a URL query string at all.
+#[derive(Clone)]
 enum PendingEditorSource {
     ExistingFile(PathBuf),
     NewEmpty { display_number: u32 },
@@ -1076,29 +1077,55 @@ async fn open_new_editor_window(
 /// call) surfaces as a normal `Err`, for the editor window's own JS to
 /// announce, rather than blocking every other window from opening.
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct NativeDecodedAudio {
     sample_rate: u32,
     channels: usize,
     frames: usize,
     duration_sec: f64,
-    /// One base64 string per channel. Each string contains little-endian f32 PCM.
-    channel_f32_le_base64: Vec<String>,
+    cache_id: String,
+}
+
+#[derive(Clone)]
+struct NativeDecodeCacheEntry {
+    source_path: String,
+    audio: NativeDecodedAudio,
+    channel_files: Vec<PathBuf>,
 }
 
 #[derive(Default)]
-struct NativeDecodeClaims(Mutex<HashSet<String>>);
+struct NativeDecodeCache(Mutex<HashMap<String, NativeDecodeCacheEntry>>);
 
-/// Native MP3 decoding boundary. This intentionally handles MP3 only in this
-/// build: the failing WebView2 MP3 path is replaced without disturbing the
-/// already-working WAV/M4A/FLAC/OGG path or any editor/save/window behavior.
+#[derive(Serialize)]
+struct NativePcmChunk {
+    start_frame: usize,
+    frames: usize,
+    f32_le_base64: String,
+}
+
+/// Native MP3 decoding boundary. Long PCM is written to a native temporary
+/// cache instead of being serialized as one enormous Tauri IPC response.
+/// The editor fetches bounded PCM chunks after this command returns metadata.
 #[tauri::command]
 async fn native_decode_audio(
     window: tauri::WebviewWindow,
     path: String,
-    _claims: tauri::State<'_, NativeDecodeClaims>,
+    cache: tauri::State<'_, NativeDecodeCache>,
 ) -> Result<NativeDecodedAudio, String> {
     let label = window.label().to_string();
+
+    // Idempotence is intentional. If WebView/Tauri asks for the same document
+    // again while recovering from pressure, return the completed native cache
+    // rather than decoding hundreds of megabytes a second time.
+    if let Ok(guard) = cache.0.lock() {
+        if let Some(existing) = guard.get(&label) {
+            if existing.source_path == path {
+                let _ = write_load_diagnostic(&label, "native-decode-cache-hit", &format!("path={path} cache_id={}", existing.audio.cache_id));
+                return Ok(existing.audio.clone());
+            }
+        }
+    }
+
     let path_buf = PathBuf::from(&path);
     let extension = path_buf.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if extension != "mp3" {
@@ -1108,23 +1135,20 @@ async fn native_decode_audio(
     let started = std::time::Instant::now();
     let file_bytes = fs::read(&path_buf).map_err(|e| format!("Could not read audio file: {e}"))?;
     let file_len = file_bytes.len();
-    let _ = write_load_diagnostic(
-        &label,
-        "native-decode-start",
-        &format!("path={path} file_bytes={file_len} decoder=nanomp3-core"),
-    );
+    let _ = write_load_diagnostic(&label, "native-decode-start", &format!("path={path} file_bytes={file_len} decoder=nanomp3-core transport=chunked-native-cache"));
 
-    // nanomp3-core decodes directly from the byte stream and, unlike the strict
-    // Symphonia demuxer used in 0.2.10, can resynchronize after junk bytes in the
-    // middle of an otherwise valid MP3. Roxanne Follow Up.mp3 contains a short
-    // 0xff junk run around byte 716264. The old path interpreted that boundary as
-    // EOF and silently returned a 59.69-second partial document.
+    let cache_id = format!("{}-{}", label, SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
+    let cache_dir = std::env::temp_dir().join("AccessibleAudioStudio").join("pcm-cache").join(&cache_id);
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("Could not create native PCM cache: {e}"))?;
+
     let mut decoder = NanoMp3Decoder::new();
     let mut remaining: &[u8] = &file_bytes;
     let mut pcm = [0.0f32; MAX_SAMPLES_PER_FRAME];
-    let mut channel_data: Vec<Vec<f32>> = Vec::new();
     let mut sample_rate: Option<u32> = None;
     let mut channel_count: Option<usize> = None;
+    let mut writers: Vec<std::io::BufWriter<fs::File>> = Vec::new();
+    let mut channel_files: Vec<PathBuf> = Vec::new();
+    let mut frame_total: usize = 0;
     let mut packet_count: usize = 0;
     let mut skipped_events: usize = 0;
     let mut consumed_total: usize = 0;
@@ -1132,14 +1156,8 @@ async fn native_decode_audio(
     while !remaining.is_empty() {
         let before = remaining.len();
         let (consumed, result) = decoder.decode(remaining, &mut pcm);
-        if consumed == 0 {
-            return Err(format!(
-                "MP3 decoder made no progress at byte {consumed_total}; refusing a partial decode."
-            ));
-        }
-        if consumed > before {
-            return Err("MP3 decoder reported an invalid consumed-byte count.".to_string());
-        }
+        if consumed == 0 { return Err(format!("MP3 decoder made no progress at byte {consumed_total}; refusing a partial decode.")); }
+        if consumed > before { return Err("MP3 decoder reported an invalid consumed-byte count.".to_string()); }
         remaining = &remaining[consumed..];
         consumed_total += consumed;
 
@@ -1148,98 +1166,96 @@ async fn native_decode_audio(
                 let channels = info.channels.num() as usize;
                 let rate = info.sample_rate as u32;
                 let frames = info.samples_produced;
-                if channels == 0 || frames == 0 {
-                    continue;
-                }
+                if channels == 0 || frames == 0 { continue; }
                 match sample_rate {
                     None => sample_rate = Some(rate),
-                    Some(existing) if existing != rate => {
-                        return Err(format!("MP3 sample rate changed during decode ({existing} to {rate})."));
-                    }
+                    Some(existing) if existing != rate => return Err(format!("MP3 sample rate changed during decode ({existing} to {rate}).")),
                     _ => {}
                 }
                 match channel_count {
                     None => {
                         channel_count = Some(channels);
-                        channel_data = (0..channels).map(|_| Vec::new()).collect();
+                        for channel_index in 0..channels {
+                            let channel_path = cache_dir.join(format!("channel-{channel_index}.f32le"));
+                            let file = fs::File::create(&channel_path).map_err(|e| format!("Could not create PCM cache channel: {e}"))?;
+                            writers.push(std::io::BufWriter::new(file));
+                            channel_files.push(channel_path);
+                        }
                     }
-                    Some(existing) if existing != channels => {
-                        return Err("MP3 channel count changed during decode.".to_string());
-                    }
+                    Some(existing) if existing != channels => return Err("MP3 channel count changed during decode.".to_string()),
                     _ => {}
                 }
-
-                let sample_count = frames
-                    .checked_mul(channels)
-                    .ok_or_else(|| "MP3 frame sample count overflowed.".to_string())?;
-                if sample_count > pcm.len() {
-                    return Err("MP3 decoder produced more samples than its output buffer can hold.".to_string());
-                }
+                let sample_count = frames.checked_mul(channels).ok_or_else(|| "MP3 frame sample count overflowed.".to_string())?;
+                if sample_count > pcm.len() { return Err("MP3 decoder produced more samples than its output buffer can hold.".to_string()); }
                 for frame in pcm[..sample_count].chunks_exact(channels) {
                     for (channel_index, sample) in frame.iter().enumerate() {
-                        channel_data[channel_index].push(*sample);
+                        writers[channel_index].write_all(&sample.to_le_bytes()).map_err(|e| format!("Could not write native PCM cache: {e}"))?;
                     }
                 }
+                frame_total += frames;
                 packet_count += 1;
             }
-            Err(NanoMp3Error::ReservoirUnavailable(_)) => {
-                // Expected after a resynchronization point. Later frames can decode.
-                skipped_events += 1;
-            }
-            Err(NanoMp3Error::NoFrame) | Err(NanoMp3Error::Corrupt(_)) => {
-                // The decoder consumed junk/corrupt bytes and can continue scanning.
-                skipped_events += 1;
-            }
-            Err(NanoMp3Error::UnsupportedLayer(_)) => {
-                return Err("The selected file contains unsupported non-MP3 MPEG audio frames.".to_string());
-            }
-            Err(_) => {
-                skipped_events += 1;
-            }
+            Err(NanoMp3Error::ReservoirUnavailable(_)) | Err(NanoMp3Error::NoFrame) | Err(NanoMp3Error::Corrupt(_)) => skipped_events += 1,
+            Err(NanoMp3Error::UnsupportedLayer(_)) => return Err("The selected file contains unsupported non-MP3 MPEG audio frames.".to_string()),
+            Err(_) => skipped_events += 1,
         }
     }
+    for writer in &mut writers { writer.flush().map_err(|e| format!("Could not flush native PCM cache: {e}"))?; }
 
     let sample_rate = sample_rate.ok_or_else(|| "The MP3 decoder produced no audio samples.".to_string())?;
-    let frames = channel_data.first().map(|c| c.len()).unwrap_or(0);
-    if frames == 0 {
-        return Err("The MP3 decoder produced an empty audio document.".to_string());
-    }
-    if channel_data.iter().any(|c| c.len() != frames) {
-        return Err("Native decoder produced inconsistent channel lengths.".to_string());
-    }
-    let duration_sec = frames as f64 / sample_rate as f64;
+    let channels = channel_count.ok_or_else(|| "The MP3 decoder produced no audio channels.".to_string())?;
+    if frame_total == 0 { return Err("The MP3 decoder produced an empty audio document.".to_string()); }
+    if consumed_total != file_len { return Err(format!("MP3 decode ended before the source file was fully scanned ({consumed_total} of {file_len} bytes).")); }
+    let duration_sec = frame_total as f64 / sample_rate as f64;
+    let audio = NativeDecodedAudio { sample_rate, channels, frames: frame_total, duration_sec, cache_id: cache_id.clone() };
 
-    let mut encoded_channels = Vec::with_capacity(channel_data.len());
-    for channel in channel_data {
-        let mut bytes = Vec::with_capacity(channel.len() * 4);
-        for sample in channel {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        encoded_channels.push(BASE64_STANDARD.encode(bytes));
+    let _ = write_load_diagnostic(&label, "native-decode-success", &format!(
+        "elapsed_ms={} duration_sec={duration_sec} channels={channels} sample_rate={sample_rate} frames={frame_total} packets={packet_count} consumed_bytes={consumed_total} source_bytes={file_len} skipped_events={skipped_events} decoder=nanomp3-core transport=chunked-native-cache cache_id={cache_id}",
+        started.elapsed().as_millis()
+    ));
+
+    let entry = NativeDecodeCacheEntry { source_path: path, audio: audio.clone(), channel_files };
+    cache.0.lock().map_err(|_| "Could not access native PCM cache state.".to_string())?.insert(label, entry);
+    Ok(audio)
+}
+
+#[tauri::command]
+async fn read_native_pcm_chunk(
+    window: tauri::WebviewWindow,
+    cache_id: String,
+    channel_index: usize,
+    start_frame: usize,
+    frame_count: usize,
+    cache: tauri::State<'_, NativeDecodeCache>,
+) -> Result<NativePcmChunk, String> {
+    const MAX_CHUNK_FRAMES: usize = 1_048_576;
+    if frame_count == 0 || frame_count > MAX_CHUNK_FRAMES { return Err("Invalid native PCM chunk size.".to_string()); }
+    let label = window.label().to_string();
+    let entry = cache.0.lock().map_err(|_| "Could not access native PCM cache state.".to_string())?.get(&label).cloned().ok_or_else(|| "Native PCM cache is not available for this editor.".to_string())?;
+    if entry.audio.cache_id != cache_id { return Err("Native PCM cache identifier does not match this editor.".to_string()); }
+    if channel_index >= entry.channel_files.len() { return Err("Native PCM channel does not exist.".to_string()); }
+    if start_frame >= entry.audio.frames { return Ok(NativePcmChunk { start_frame, frames: 0, f32_le_base64: String::new() }); }
+    let frames = frame_count.min(entry.audio.frames - start_frame);
+    let byte_count = frames.checked_mul(4).ok_or_else(|| "PCM chunk size overflowed.".to_string())?;
+    let byte_offset = start_frame.checked_mul(4).ok_or_else(|| "PCM chunk offset overflowed.".to_string())?;
+    let mut file = fs::File::open(&entry.channel_files[channel_index]).map_err(|e| format!("Could not open native PCM cache: {e}"))?;
+    file.seek(SeekFrom::Start(byte_offset as u64)).map_err(|e| format!("Could not seek native PCM cache: {e}"))?;
+    let mut bytes = vec![0u8; byte_count];
+    file.read_exact(&mut bytes).map_err(|e| format!("Could not read native PCM cache: {e}"))?;
+    Ok(NativePcmChunk { start_frame, frames, f32_le_base64: BASE64_STANDARD.encode(bytes) })
+}
+
+#[tauri::command]
+async fn release_native_pcm_cache(
+    window: tauri::WebviewWindow,
+    cache: tauri::State<'_, NativeDecodeCache>,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    let entry = cache.0.lock().map_err(|_| "Could not access native PCM cache state.".to_string())?.remove(&label);
+    if let Some(entry) = entry {
+        if let Some(dir) = entry.channel_files.first().and_then(|p| p.parent()).map(|p| p.to_path_buf()) { let _ = fs::remove_dir_all(dir); }
     }
-
-    let _ = write_load_diagnostic(
-        &label,
-        "native-decode-success",
-        &format!(
-            "elapsed_ms={} duration_sec={duration_sec} channels={} sample_rate={sample_rate} frames={frames} packets={packet_count} consumed_bytes={consumed_total} source_bytes={file_len} skipped_events={skipped_events} decoder=nanomp3-core",
-            started.elapsed().as_millis(), encoded_channels.len()
-        ),
-    );
-
-    if consumed_total != file_len {
-        return Err(format!(
-            "MP3 decode ended before the source file was fully scanned ({consumed_total} of {file_len} bytes)."
-        ));
-    }
-
-    Ok(NativeDecodedAudio {
-        sample_rate,
-        channels: encoded_channels.len(),
-        frames,
-        duration_sec,
-        channel_f32_le_base64: encoded_channels,
-    })
+    Ok(())
 }
 
 #[tauri::command]
@@ -1249,11 +1265,11 @@ async fn get_editor_init_info(
 ) -> Result<EditorInitInfo, String> {
     let label = window.label().to_string();
     let source = {
-        let mut map = pending
+        let map = pending
             .0
             .lock()
             .map_err(|_| "Could not access pending editor window state.".to_string())?;
-        map.remove(&label)
+        map.get(&label).cloned()
     };
 
     match source {
@@ -1329,6 +1345,16 @@ async fn get_editor_init_info(
                 .to_string(),
         ),
     }
+}
+
+#[tauri::command]
+async fn acknowledge_editor_source_loaded(
+    window: tauri::WebviewWindow,
+    pending: tauri::State<'_, PendingEditorSources>,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    pending.0.lock().map_err(|_| "Could not access pending editor window state.".to_string())?.remove(&label);
+    Ok(())
 }
 
 /// Shared, Rust-side audio clipboard — the mechanism that makes
@@ -2061,7 +2087,7 @@ fn main() {
         // to one window label.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingEditorSources(Mutex::new(HashMap::new())))
-        .manage(NativeDecodeClaims(Mutex::new(HashSet::new())))
+        .manage(NativeDecodeCache::default())
         .manage(SharedAudioClipboard::default())
         .manage(DocumentRegistryState::default())
         .manage(PrimaryEditorState::default())
@@ -2085,6 +2111,9 @@ fn main() {
             open_new_editor_window,
             get_editor_init_info,
             native_decode_audio,
+            read_native_pcm_chunk,
+            release_native_pcm_cache,
+            acknowledge_editor_source_loaded,
             append_audio_load_diagnostic,
             set_shared_audio_clipboard,
             get_shared_audio_clipboard,

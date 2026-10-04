@@ -119,25 +119,65 @@ function initShortcutDiagnosticsPanel() {
 // ---------------------------------------------------------------------
 
 
-function audioBufferFromNativeDecode(nativeAudio) {
+async function audioBufferFromNativeDecode(nativeAudio, displayName) {
   const sampleRate = Number(nativeAudio.sample_rate);
   const channelCount = Number(nativeAudio.channels);
   const frameCount = Number(nativeAudio.frames);
-  const encodedChannels = nativeAudio.channel_f32_le_base64 || [];
-  if (!sampleRate || !channelCount || !frameCount || encodedChannels.length !== channelCount) {
+  const cacheId = nativeAudio.cache_id;
+  if (!sampleRate || !channelCount || !frameCount || !cacheId) {
     throw new Error("Native decoder returned incomplete audio metadata.");
   }
+
   const ctx = getAudioContext();
-  const buffer = ctx.createBuffer(channelCount, frameCount, sampleRate);
+  let buffer;
+  try {
+    buffer = ctx.createBuffer(channelCount, frameCount, sampleRate);
+  } catch (error) {
+    throw new Error(`Could not allocate the audio document in the editor: ${error?.message || error}`);
+  }
+
+  // Pull bounded chunks from the native PCM cache. This avoids serializing a
+  // 46-minute document as one enormous base64 IPC response, which previously
+  // crashed WebView2 with STATUS_BREAKPOINT. The percentage below is genuine:
+  // it is based on PCM frames actually copied into the editor AudioBuffer.
+  const { invoke } = window.__TAURI__.core;
+  const chunkFrames = 1_048_576;
+  const totalWork = frameCount * channelCount;
+  let completedWork = 0;
+  let lastAnnouncedPercent = -10;
+
   for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
-    const binary = atob(encodedChannels[channelIndex]);
-    if (binary.length !== frameCount * 4) {
-      throw new Error("Native decoder returned an incomplete PCM channel.");
+    for (let startFrame = 0; startFrame < frameCount; startFrame += chunkFrames) {
+      const requested = Math.min(chunkFrames, frameCount - startFrame);
+      const chunk = await invoke("read_native_pcm_chunk", {
+        cacheId,
+        channelIndex,
+        startFrame,
+        frameCount: requested,
+      });
+      const returnedFrames = Number(chunk.frames);
+      if (returnedFrames !== requested) {
+        throw new Error(`Native PCM cache returned ${returnedFrames} frames when ${requested} were requested.`);
+      }
+      const binary = atob(chunk.f32_le_base64 || "");
+      if (binary.length !== returnedFrames * 4) {
+        throw new Error("Native PCM cache returned an incomplete audio chunk.");
+      }
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      buffer.copyToChannel(new Float32Array(bytes.buffer), channelIndex, startFrame);
+      completedWork += returnedFrames;
+
+      const percent = Math.floor((completedWork / totalWork) * 100);
+      const milestone = Math.floor(percent / 10) * 10;
+      if (milestone >= lastAnnouncedPercent + 10 && milestone > 0 && milestone < 100) {
+        lastAnnouncedPercent = milestone;
+        const message = `Preparing ${displayName}. ${milestone} percent.`;
+        setDocumentLoadState("loading", message);
+        announceStatus(message);
+        await recordLoadDiagnostic("pcm-transfer-progress", `percent=${milestone} frames_copied=${completedWork} total_frames=${totalWork}`);
+      }
     }
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    const samples = new Float32Array(bytes.buffer);
-    buffer.copyToChannel(samples, channelIndex);
   }
   return buffer;
 }
@@ -214,7 +254,7 @@ async function loadDocumentForThisWindow() {
           `elapsed_ms=${Math.round(performance.now() - nativeStarted)} duration_sec=${nativeAudio.duration_sec} channels=${nativeAudio.channels} sample_rate=${nativeAudio.sample_rate} frames=${nativeAudio.frames}`
         );
         announceLoading(`Preparing ${info.name}. Please wait.`);
-        buffer = audioBufferFromNativeDecode(nativeAudio);
+        buffer = await audioBufferFromNativeDecode(nativeAudio, info.name);
         await recordLoadDiagnostic(
           "native-buffer-created",
           `duration_sec=${buffer.duration} channels=${buffer.numberOfChannels} sample_rate=${buffer.sampleRate} frames=${buffer.length}`
@@ -239,6 +279,13 @@ async function loadDocumentForThisWindow() {
 
     documentLoadState = "ready";
     if (el.loadingStatus) el.loadingStatus.hidden = true;
+    // Only consume the registered source after the document is genuinely ready.
+    // A WebView reload during loading can therefore retry instead of becoming an
+    // orphaned editor with "no registered source".
+    try { await invoke("acknowledge_editor_source_loaded"); } catch (_) {}
+    if (info.decoder === "native-mp3") {
+      try { await invoke("release_native_pcm_cache"); } catch (_) {}
+    }
     await recordLoadDiagnostic(
       "editor-ready",
       activeDoc && activeDoc.buffer

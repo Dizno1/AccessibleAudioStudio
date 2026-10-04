@@ -1,4 +1,4 @@
-# 0.2.13 - Duplicate-open regression repair
+# 0.2.14 - Duplicate-open regression repair
 
 This build repairs the 0.2.12 regression exposed by the 46-minute MP3 test. The Rust-side permanent per-window decode claim has been removed because it could turn a later duplicate invocation into a fatal `editor-open-failed` result after the legitimate decode had already succeeded. Duplicate prevention now occurs before source/decode work at the editor initialization boundary, with an idempotent `editorInitializationStarted` gate plus the existing one-shot `nativeDecodeRequested` gate. A duplicate initialization is ignored and logged as `editor-init-duplicate-blocked`; it cannot poison the legitimate document-open operation.
 
