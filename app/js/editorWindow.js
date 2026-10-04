@@ -36,6 +36,7 @@ let pendingPrimaryResolve = null;
 let applicationShutdownRequested = false;
 let documentLoadState = "loading";
 let nativeDecodeRequested = false;
+let editorInitializationStarted = false;
 
 function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
@@ -58,6 +59,11 @@ function recordDecodeDiagnostic(event, details = "") {
 }
 
 async function main() {
+  if (editorInitializationStarted) {
+    await recordLoadDiagnostic("editor-init-duplicate-blocked", "duplicate editor initialization ignored before source/decode request");
+    return;
+  }
+  editorInitializationStarted = true;
   cacheElements();
   bindEvents();
   initAnnouncer();

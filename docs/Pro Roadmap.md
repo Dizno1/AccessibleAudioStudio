@@ -1,3 +1,7 @@
+# 0.2.13 checkpoint - duplicate-open regression repair
+
+0.2.12 proved the accessible loading announcements but its permanent Rust per-window decode claim converted a later duplicate invocation into a fatal document-open failure. 0.2.13 moves duplicate prevention to the editor initialization boundary: initialization is idempotent and native MP3 decode remains one-shot per editor. The Rust permanent claim is removed so a blocked duplicate cannot invalidate a legitimate decode result. Large-file PCM transport remains the next architectural boundary after this regression test.
+
 # 0.2.11 - MP3 resynchronization repair
 
 The 0.2.10 native Symphonia path proved that native decoding works, but `Roxanne Follow Up.mp3` stopped at 59.690 seconds because the source contains a short run of junk `0xff` bytes around byte 716264. FFmpeg and Windows Media Player resynchronize and continue to the remaining valid MP3 frames; the strict Symphonia packet reader treated that discontinuity as EOF.

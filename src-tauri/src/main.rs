@@ -1096,16 +1096,9 @@ struct NativeDecodeClaims(Mutex<HashSet<String>>);
 async fn native_decode_audio(
     window: tauri::WebviewWindow,
     path: String,
-    claims: tauri::State<'_, NativeDecodeClaims>,
+    _claims: tauri::State<'_, NativeDecodeClaims>,
 ) -> Result<NativeDecodedAudio, String> {
     let label = window.label().to_string();
-    {
-        let mut guard = claims.0.lock().map_err(|_| "Could not access native decode state.".to_string())?;
-        if !guard.insert(label.clone()) {
-            let _ = write_load_diagnostic(&label, "native-decode-duplicate-blocked", &format!("path={path}"));
-            return Err("Duplicate native decode request blocked for this editor window.".to_string());
-        }
-    }
     let path_buf = PathBuf::from(&path);
     let extension = path_buf.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if extension != "mp3" {

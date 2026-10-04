@@ -1,4 +1,10 @@
-# 0.2.12 - Large-file loading state and duplicate-decode guard
+# 0.2.13 - Duplicate-open regression repair
+
+This build repairs the 0.2.12 regression exposed by the 46-minute MP3 test. The Rust-side permanent per-window decode claim has been removed because it could turn a later duplicate invocation into a fatal `editor-open-failed` result after the legitimate decode had already succeeded. Duplicate prevention now occurs before source/decode work at the editor initialization boundary, with an idempotent `editorInitializationStarted` gate plus the existing one-shot `nativeDecodeRequested` gate. A duplicate initialization is ignored and logged as `editor-init-duplicate-blocked`; it cannot poison the legitimate document-open operation.
+
+The accessible Loading / Decoding / Preparing states from 0.2.12 are retained. The nanomp3-core resynchronizing MP3 decoder from 0.2.11 is unchanged. This build deliberately does not claim that the monolithic long-file PCM IPC/AudioBuffer architecture is solved; the 46-minute file remains the test that will determine the next transport/storage boundary after this regression is removed.
+
+## 0.2.12 - Large-file loading state and duplicate-decode guard
 
 This build preserves the 0.2.11 nanomp3-core MP3 resynchronization decoder and adds the first large-document stability boundary. Each editor window may issue only one native MP3 decode request; a second request for the same editor label is rejected and logged as `native-decode-duplicate-blocked`. The editor also has an explicit Loading/Ready/Failed state. Screen readers receive meaningful stage announcements (`Loading`, `Decoding`, `Preparing`, then the existing opened announcement), while timeline and playback controls remain disabled until the document is actually ready.
 
