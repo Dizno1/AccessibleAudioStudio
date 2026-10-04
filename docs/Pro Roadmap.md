@@ -3177,3 +3177,25 @@ Required verification:
 2. Repeat with multiple dirty documents and confirm all dirty document names are announced when the modal opens.
 3. Confirm `Save and Quit`, `Don't Save and Quit`, and `Cancel` retain their existing behavior.
 4. Confirm the visible dirty-document list is still available when reviewing the dialog with the Virtual PC Cursor.
+
+## Audio-load/freeze diagnostics - investigation build
+
+This build does not attempt to fix the newly observed idle freeze or redesign long-file decoding. It adds persistent, silent instrumentation so the next reproduction produces evidence that survives a WebView freeze or Task Manager termination. Save, Primary Editor, document identity, shutdown, editing, and dirty-state behavior are intentionally unchanged.
+
+For each editor open, the native side records the file-read start, source byte size, read completion/failure, bytes read, and elapsed read time. The editor then records receipt of the native payload, transferred byte count, File construction, ArrayBuffer conversion, decode start, decode success/failure/20-second timeout, decoded duration, channel count, sample rate, frame count, and editor-ready state. If WebView2's underlying `decodeAudioData()` completes or fails after the existing 20-second application timeout has already fired, that late completion is recorded explicitly as `decode-late-success` or `decode-late-failure`. This is important because the existing timeout rejects the application's wait but cannot cancel the browser audio decoder itself.
+
+Diagnostics are written immediately and flushed to the Windows known Documents folder at:
+
+`Documents\AccessibleAudioStudio\Diagnostics\audio-load-diagnostics.log`
+
+On a OneDrive-redirected Documents installation, this resolves through the same Windows Known Folder mechanism already used by the working Audio workspace. The diagnostics folder is created only when a diagnostic event is first written. The log is intentionally not announced through JAWS and does not alter loading or timeout behavior.
+
+### Controlled verification
+
+1. Start the diagnostic build fresh and open one known-good small audio file. Let it become ready, close it normally, and retain the log.
+2. Open a medium audio file and repeat.
+3. Open the approximately 46-minute Roxanne MP3 that previously produced an incorrect tiny duration. Do not edit or save it. Wait for the application to settle or fail.
+4. If AccessibleAudioStudio later freezes while idle, end only AccessibleAudioStudio through Task Manager as previously proven possible. Do not delete the diagnostics log.
+5. Return `audio-load-diagnostics.log` with the observed JAWS history. The key question is whether the log ends at read/transfer/decode start, records a 20-second timeout, later records `decode-late-success`, reaches `editor-ready`, or stops at another boundary.
+
+This instrumentation is evidence-gathering only. No conclusion that the long-file decode and idle freeze share one root cause should be made until the log demonstrates it.

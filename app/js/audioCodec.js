@@ -63,16 +63,36 @@ export function isSupportedAudioExtension(filename) {
 // extension but is corrupt or otherwise pathological.
 const DECODE_TIMEOUT_MS = 20000;
 
-function withTimeout(promise, ms, timeoutMessage) {
+function withTimeout(promise, ms, timeoutMessage, onDiagnostic = null) {
+  let settled = false;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+    const timer = setTimeout(() => {
+      settled = true;
+      if (onDiagnostic) onDiagnostic("decode-timeout", `timeout_ms=${ms}`);
+      reject(new Error(timeoutMessage));
+    }, ms);
     promise.then(
       (value) => {
         clearTimeout(timer);
+        if (settled) {
+          if (onDiagnostic) {
+            onDiagnostic(
+              "decode-late-success",
+              `duration_sec=${value.duration} channels=${value.numberOfChannels} sample_rate=${value.sampleRate}`
+            );
+          }
+          return;
+        }
+        settled = true;
         resolve(value);
       },
       (err) => {
         clearTimeout(timer);
+        if (settled) {
+          if (onDiagnostic) onDiagnostic("decode-late-failure", `error=${err && err.message ? err.message : String(err)}`);
+          return;
+        }
+        settled = true;
         reject(err);
       }
     );
@@ -81,20 +101,46 @@ function withTimeout(promise, ms, timeoutMessage) {
 
 /**
  * Decode a File/Blob into an AudioBuffer.
+ * Optional diagnostics are deliberately observational only; they do not change
+ * timeout or decoder behavior.
  * @returns {Promise<AudioBuffer>}
  */
-export async function decodeAudioFile(file) {
+export async function decodeAudioFile(file, onDiagnostic = null) {
+  if (onDiagnostic) onDiagnostic("array-buffer-start", `file_bytes=${file.size}`);
+  const arrayStarted = performance.now();
   const arrayBuffer = await file.arrayBuffer();
+  if (onDiagnostic) {
+    onDiagnostic(
+      "array-buffer-complete",
+      `bytes=${arrayBuffer.byteLength} elapsed_ms=${Math.round(performance.now() - arrayStarted)}`
+    );
+  }
   const ctx = getAudioContext();
-  // decodeAudioData's callback form is used instead of the promise form
-  // only where broader engine support matters; the promise form is
-  // supported everywhere this app targets (Chrome, Edge, Firefox, and
-  // Tauri's WebView2), so it is used directly here.
-  return withTimeout(
-    ctx.decodeAudioData(arrayBuffer.slice(0)),
-    DECODE_TIMEOUT_MS,
-    "This file took too long to decode and was skipped."
-  );
+  if (onDiagnostic) onDiagnostic("decode-start", `bytes=${arrayBuffer.byteLength} context_state=${ctx.state}`);
+  const decodeStarted = performance.now();
+  try {
+    const decoded = await withTimeout(
+      ctx.decodeAudioData(arrayBuffer.slice(0)),
+      DECODE_TIMEOUT_MS,
+      "This file took too long to decode and was skipped.",
+      onDiagnostic
+    );
+    if (onDiagnostic) {
+      onDiagnostic(
+        "decode-success",
+        `elapsed_ms=${Math.round(performance.now() - decodeStarted)} duration_sec=${decoded.duration} channels=${decoded.numberOfChannels} sample_rate=${decoded.sampleRate} frames=${decoded.length}`
+      );
+    }
+    return decoded;
+  } catch (err) {
+    if (onDiagnostic) {
+      onDiagnostic(
+        "decode-failed",
+        `elapsed_ms=${Math.round(performance.now() - decodeStarted)} error=${err && err.message ? err.message : String(err)}`
+      );
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------

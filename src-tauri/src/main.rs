@@ -4,6 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
+use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::PathBuf;
 use std::collections::{HashMap, VecDeque};
 
@@ -1086,7 +1088,34 @@ async fn get_editor_init_info(
 
     match source {
         Some(PendingEditorSource::ExistingFile(path)) => {
-            let data = fs::read(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+            let metadata_len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let _ = write_load_diagnostic(
+                &label,
+                "rust-read-start",
+                &format!("path={} file_bytes={metadata_len}", path.display()),
+            );
+            let read_started = std::time::Instant::now();
+            let data = match fs::read(&path) {
+                Ok(data) => data,
+                Err(e) => {
+                    let _ = write_load_diagnostic(
+                        &label,
+                        "rust-read-failed",
+                        &format!("path={} error={e}", path.display()),
+                    );
+                    return Err(format!("{}: {}", path.display(), e));
+                }
+            };
+            let _ = write_load_diagnostic(
+                &label,
+                "rust-read-complete",
+                &format!(
+                    "path={} bytes_read={} elapsed_ms={}",
+                    path.display(),
+                    data.len(),
+                    read_started.elapsed().as_millis()
+                ),
+            );
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -1345,6 +1374,46 @@ fn windows_documents_dir() -> Result<PathBuf, String> {
 
 fn audio_workspace_dir() -> Result<PathBuf, String> {
     Ok(windows_documents_dir()?.join("AccessibleAudioStudio").join("Audio"))
+}
+
+// Diagnostic log for file-open/decode stability investigations. This is intentionally
+// separate from the user-facing status/announcement path: it must remain useful even
+// if the WebView later freezes and the process has to be ended in Task Manager.
+fn load_diagnostics_path() -> Result<PathBuf, String> {
+    Ok(windows_documents_dir()?
+        .join("AccessibleAudioStudio")
+        .join("Diagnostics")
+        .join("audio-load-diagnostics.log"))
+}
+
+fn write_load_diagnostic(window_label: &str, event: &str, details: &str) -> Result<(), String> {
+    let path = load_diagnostics_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create diagnostics folder: {e}"))?;
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let clean_details = details.replace('\r', " ").replace('\n', " ");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("Could not open diagnostics log: {e}"))?;
+    writeln!(file, "{millis}\t{window_label}\t{event}\t{clean_details}")
+        .map_err(|e| format!("Could not write diagnostics log: {e}"))?;
+    file.flush().map_err(|e| format!("Could not flush diagnostics log: {e}"))
+}
+
+#[tauri::command]
+fn append_audio_load_diagnostic(
+    window: tauri::WebviewWindow,
+    event: String,
+    details: Option<String>,
+) -> Result<(), String> {
+    write_load_diagnostic(window.label(), &event, details.as_deref().unwrap_or(""))
 }
 
 fn verify_audio_write(path: &std::path::Path, expected_len: usize) -> Result<(), String> {
@@ -1823,6 +1892,7 @@ fn main() {
             open_audio_windows,
             open_new_editor_window,
             get_editor_init_info,
+            append_audio_load_diagnostic,
             set_shared_audio_clipboard,
             get_shared_audio_clipboard,
             register_document_state,

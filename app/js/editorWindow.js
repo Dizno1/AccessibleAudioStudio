@@ -39,6 +39,22 @@ function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
 }
 
+// Persist file-open/decode diagnostics on the Rust side so the evidence survives
+// a WebView freeze or Task Manager termination. Diagnostics are intentionally
+// silent: they must never add screen-reader chatter or alter editor behavior.
+async function recordLoadDiagnostic(event, details = "") {
+  if (!isRunningInTauri()) return;
+  try {
+    await window.__TAURI__.core.invoke("append_audio_load_diagnostic", { event, details });
+  } catch (_) {
+    // Diagnostics must never be able to break document loading.
+  }
+}
+
+function recordDecodeDiagnostic(event, details = "") {
+  void recordLoadDiagnostic(event, details);
+}
+
 async function main() {
   cacheElements();
   bindEvents();
@@ -111,7 +127,14 @@ async function loadDocumentForThisWindow() {
 
   try {
     const { invoke } = window.__TAURI__.core;
+    await recordLoadDiagnostic("editor-init-request", "requesting pending editor source");
+    const initStarted = performance.now();
     const info = await invoke("get_editor_init_info");
+    const transferredBytes = info && info.data ? info.data.length : 0;
+    await recordLoadDiagnostic(
+      "editor-init-received",
+      `kind=${info.kind} name=${info.name || ""} transferred_bytes=${transferredBytes} elapsed_ms=${Math.round(performance.now() - initStarted)}`
+    );
     // info: { kind: "file" | "new", name, path, data }
 
     if (info.kind === "new") {
@@ -126,7 +149,11 @@ async function loadDocumentForThisWindow() {
       });
     } else {
       const file = new File([new Uint8Array(info.data)], info.name);
-      const buffer = await decodeAudioFile(file);
+      await recordLoadDiagnostic(
+        "file-object-created",
+        `name=${info.name} file_bytes=${file.size} source_path=${info.path || ""}`
+      );
+      const buffer = await decodeAudioFile(file, recordDecodeDiagnostic);
       const extension = (info.name.split(".").pop() || "wav").toLowerCase();
       activeDoc = new AudioDocument({
         buffer,
@@ -137,8 +164,18 @@ async function loadDocumentForThisWindow() {
       });
     }
 
+    await recordLoadDiagnostic(
+      "editor-ready",
+      activeDoc && activeDoc.buffer
+        ? `duration_sec=${activeDoc.buffer.duration} channels=${activeDoc.buffer.numberOfChannels} sample_rate=${activeDoc.buffer.sampleRate}`
+        : "document initialized without audio buffer metadata"
+    );
     finishLoadingDocument();
   } catch (err) {
+    await recordLoadDiagnostic(
+      "editor-open-failed",
+      `error=${err && err.message ? err.message : String(err)}`
+    );
     el.documentHeading.textContent = "This document could not be opened";
     announceAlert(
       "This audio document could not be opened. " + (err && err.message ? err.message : String(err))
