@@ -11,13 +11,7 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::Serialize;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use symphonia::core::audio::{SampleBuffer, Signal};
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use nanomp3_core::{DecodeError as NanoMp3Error, Decoder as NanoMp3Decoder, MAX_SAMPLES_PER_FRAME};
 
 // A generous buffer for the Explorer-style multi-select return value.
 #[cfg(windows)]
@@ -1108,78 +1102,95 @@ async fn native_decode_audio(
     }
 
     let started = std::time::Instant::now();
-    let file_len = fs::metadata(&path_buf).map(|m| m.len()).unwrap_or(0);
-    let _ = write_load_diagnostic(&label, "native-decode-start", &format!("path={path} file_bytes={file_len}"));
+    let file_bytes = fs::read(&path_buf).map_err(|e| format!("Could not read audio file: {e}"))?;
+    let file_len = file_bytes.len();
+    let _ = write_load_diagnostic(
+        &label,
+        "native-decode-start",
+        &format!("path={path} file_bytes={file_len} decoder=nanomp3-core"),
+    );
 
-    let file = fs::File::open(&path_buf).map_err(|e| format!("Could not open audio file: {e}"))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("mp3");
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-        .map_err(|e| format!("Could not identify MP3 stream: {e}"))?;
-    let mut format = probed.format;
-    let track = format
-        .default_track()
-        .ok_or_else(|| "The MP3 contains no decodable audio track.".to_string())?;
-    let track_id = track.id;
-    let codec_params = track.codec_params.clone();
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("Could not create MP3 decoder: {e}"))?;
-
+    // nanomp3-core decodes directly from the byte stream and, unlike the strict
+    // Symphonia demuxer used in 0.2.10, can resynchronize after junk bytes in the
+    // middle of an otherwise valid MP3. Roxanne Follow Up.mp3 contains a short
+    // 0xff junk run around byte 716264. The old path interpreted that boundary as
+    // EOF and silently returned a 59.69-second partial document.
+    let mut decoder = NanoMp3Decoder::new();
+    let mut remaining: &[u8] = &file_bytes;
+    let mut pcm = [0.0f32; MAX_SAMPLES_PER_FRAME];
     let mut channel_data: Vec<Vec<f32>> = Vec::new();
     let mut sample_rate: Option<u32> = None;
+    let mut channel_count: Option<usize> = None;
     let mut packet_count: usize = 0;
+    let mut skipped_events: usize = 0;
+    let mut consumed_total: usize = 0;
 
-    loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(SymphoniaError::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
-            Err(err) => return Err(format!("MP3 packet read failed: {err}")),
-        };
-        if packet.track_id() != track_id {
-            continue;
+    while !remaining.is_empty() {
+        let before = remaining.len();
+        let (consumed, result) = decoder.decode(remaining, &mut pcm);
+        if consumed == 0 {
+            return Err(format!(
+                "MP3 decoder made no progress at byte {consumed_total}; refusing a partial decode."
+            ));
         }
-        let decoded = match decoder.decode(&packet) {
-            Ok(decoded) => decoded,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(SymphoniaError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(SymphoniaError::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
-            Err(err) => return Err(format!("MP3 decode failed: {err}")),
-        };
-        packet_count += 1;
-        let spec = *decoded.spec();
-        let channels = spec.channels.count();
-        if channels == 0 {
-            continue;
+        if consumed > before {
+            return Err("MP3 decoder reported an invalid consumed-byte count.".to_string());
         }
-        match sample_rate {
-            None => sample_rate = Some(spec.rate),
-            Some(rate) if rate != spec.rate => {
-                return Err(format!("MP3 sample rate changed during decode ({rate} to {}).", spec.rate));
-            }
-            _ => {}
-        }
-        if channel_data.is_empty() {
-            channel_data = (0..channels).map(|_| Vec::new()).collect();
-        } else if channel_data.len() != channels {
-            return Err("MP3 channel count changed during decode.".to_string());
-        }
+        remaining = &remaining[consumed..];
+        consumed_total += consumed;
 
-        let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
-        let samples = sample_buf.samples();
-        for frame in samples.chunks_exact(channels) {
-            for (channel_index, sample) in frame.iter().enumerate() {
-                channel_data[channel_index].push(*sample);
+        match result {
+            Ok(info) => {
+                let channels = info.channels.num() as usize;
+                let rate = info.sample_rate as u32;
+                let frames = info.samples_produced;
+                if channels == 0 || frames == 0 {
+                    continue;
+                }
+                match sample_rate {
+                    None => sample_rate = Some(rate),
+                    Some(existing) if existing != rate => {
+                        return Err(format!("MP3 sample rate changed during decode ({existing} to {rate})."));
+                    }
+                    _ => {}
+                }
+                match channel_count {
+                    None => {
+                        channel_count = Some(channels);
+                        channel_data = (0..channels).map(|_| Vec::new()).collect();
+                    }
+                    Some(existing) if existing != channels => {
+                        return Err("MP3 channel count changed during decode.".to_string());
+                    }
+                    _ => {}
+                }
+
+                let sample_count = frames
+                    .checked_mul(channels)
+                    .ok_or_else(|| "MP3 frame sample count overflowed.".to_string())?;
+                if sample_count > pcm.len() {
+                    return Err("MP3 decoder produced more samples than its output buffer can hold.".to_string());
+                }
+                for frame in pcm[..sample_count].chunks_exact(channels) {
+                    for (channel_index, sample) in frame.iter().enumerate() {
+                        channel_data[channel_index].push(*sample);
+                    }
+                }
+                packet_count += 1;
+            }
+            Err(NanoMp3Error::ReservoirUnavailable(_)) => {
+                // Expected after a resynchronization point. Later frames can decode.
+                skipped_events += 1;
+            }
+            Err(NanoMp3Error::NoFrame) | Err(NanoMp3Error::Corrupt(_)) => {
+                // The decoder consumed junk/corrupt bytes and can continue scanning.
+                skipped_events += 1;
+            }
+            Err(NanoMp3Error::UnsupportedLayer(_)) => {
+                return Err("The selected file contains unsupported non-MP3 MPEG audio frames.".to_string());
+            }
+            Err(_) => {
+                skipped_events += 1;
             }
         }
     }
@@ -1207,10 +1218,16 @@ async fn native_decode_audio(
         &label,
         "native-decode-success",
         &format!(
-            "elapsed_ms={} duration_sec={duration_sec} channels={} sample_rate={sample_rate} frames={frames} packets={packet_count}",
+            "elapsed_ms={} duration_sec={duration_sec} channels={} sample_rate={sample_rate} frames={frames} packets={packet_count} consumed_bytes={consumed_total} source_bytes={file_len} skipped_events={skipped_events} decoder=nanomp3-core",
             started.elapsed().as_millis(), encoded_channels.len()
         ),
     );
+
+    if consumed_total != file_len {
+        return Err(format!(
+            "MP3 decode ended before the source file was fully scanned ({consumed_total} of {file_len} bytes)."
+        ));
+    }
 
     Ok(NativeDecodedAudio {
         sample_rate,

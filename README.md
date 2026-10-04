@@ -1,3 +1,11 @@
+# 0.2.11 - MP3 resynchronization repair
+
+The 0.2.10 native Symphonia path proved that native decoding works, but `Roxanne Follow Up.mp3` stopped at 59.690 seconds because the source contains a short run of junk `0xff` bytes around byte 716264. FFmpeg and Windows Media Player resynchronize and continue to the remaining valid MP3 frames; the strict Symphonia packet reader treated that discontinuity as EOF.
+
+0.2.11 changes only the native MP3 decoding boundary to `nanomp3-core`, a safe Rust frame decoder that scans the byte stream and can continue after skipped/corrupt bytes. The existing editor, save contract, Primary Editor architecture, dirty-state checkpoints, shutdown behavior, and non-MP3 decode paths are unchanged. Diagnostics now record source bytes, consumed bytes, decoded packet count, skipped/resynchronization events, and decoder identity. A native decode is not accepted unless the full source byte stream was scanned.
+
+Primary regression target: `Roxanne Follow Up.mp3` should open at approximately 91.69 seconds rather than 59.690 or 0.287 seconds.
+
 
 ## 0.2.10 - Native MP3 decoding boundary
 

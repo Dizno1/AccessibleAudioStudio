@@ -1,6 +1,6 @@
 [package]
 name = "accessibleaudiostudio-pro"
-version = "0.2.10"
+version = "0.2.11"
 description = "Professional audio recording and editing designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
@@ -57,7 +57,7 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-symphonia = { version = "0.5.5", default-features = false, features = ["mp3"] }
+nanomp3-core = { version = "0.2.0", default-features = false }
 
 # Windows-only: the native "Open Audio" picker, its live paste
 # interception, and clipboard file-list reading (see pick_files_native,
