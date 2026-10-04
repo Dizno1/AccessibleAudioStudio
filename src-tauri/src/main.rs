@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::PathBuf;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -1086,6 +1086,9 @@ struct NativeDecodedAudio {
     channel_f32_le_base64: Vec<String>,
 }
 
+#[derive(Default)]
+struct NativeDecodeClaims(Mutex<HashSet<String>>);
+
 /// Native MP3 decoding boundary. This intentionally handles MP3 only in this
 /// build: the failing WebView2 MP3 path is replaced without disturbing the
 /// already-working WAV/M4A/FLAC/OGG path or any editor/save/window behavior.
@@ -1093,8 +1096,16 @@ struct NativeDecodedAudio {
 async fn native_decode_audio(
     window: tauri::WebviewWindow,
     path: String,
+    claims: tauri::State<'_, NativeDecodeClaims>,
 ) -> Result<NativeDecodedAudio, String> {
     let label = window.label().to_string();
+    {
+        let mut guard = claims.0.lock().map_err(|_| "Could not access native decode state.".to_string())?;
+        if !guard.insert(label.clone()) {
+            let _ = write_load_diagnostic(&label, "native-decode-duplicate-blocked", &format!("path={path}"));
+            return Err("Duplicate native decode request blocked for this editor window.".to_string());
+        }
+    }
     let path_buf = PathBuf::from(&path);
     let extension = path_buf.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if extension != "mp3" {
@@ -2057,6 +2068,7 @@ fn main() {
         // to one window label.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingEditorSources(Mutex::new(HashMap::new())))
+        .manage(NativeDecodeClaims(Mutex::new(HashSet::new())))
         .manage(SharedAudioClipboard::default())
         .manage(DocumentRegistryState::default())
         .manage(PrimaryEditorState::default())

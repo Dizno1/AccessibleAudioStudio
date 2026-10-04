@@ -1,3 +1,9 @@
+# 0.2.12 - Large-file loading state and duplicate-decode guard
+
+This build preserves the 0.2.11 nanomp3-core MP3 resynchronization decoder and adds the first large-document stability boundary. Each editor window may issue only one native MP3 decode request; a second request for the same editor label is rejected and logged as `native-decode-duplicate-blocked`. The editor also has an explicit Loading/Ready/Failed state. Screen readers receive meaningful stage announcements (`Loading`, `Decoding`, `Preparing`, then the existing opened announcement), while timeline and playback controls remain disabled until the document is actually ready.
+
+This is the first stability step, not the final long-document storage architecture. The 46-minute test proved that returning roughly 488 MB of decoded PCM through Tauri IPC and constructing one monolithic Web Audio buffer is not scalable. That transport/storage redesign remains the next engine boundary; 0.2.12 prevents silent waiting and duplicate decode while preserving the known-good save, Primary Editor, dirty-state, shutdown, navigation, and MP3-resynchronization behavior.
+
 # 0.2.11 - MP3 resynchronization repair
 
 The 0.2.10 native Symphonia path proved that native decoding works, but `Roxanne Follow Up.mp3` stopped at 59.690 seconds because the source contains a short run of junk `0xff` bytes around byte 716264. FFmpeg and Windows Media Player resynchronize and continue to the remaining valid MP3 frames; the strict Symphonia packet reader treated that discontinuity as EOF.

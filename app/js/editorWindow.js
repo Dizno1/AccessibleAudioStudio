@@ -34,6 +34,8 @@ let activeDoc = null;
 let isPrimaryEditor = false;
 let pendingPrimaryResolve = null;
 let applicationShutdownRequested = false;
+let documentLoadState = "loading";
+let nativeDecodeRequested = false;
 
 function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
@@ -134,6 +136,20 @@ function audioBufferFromNativeDecode(nativeAudio) {
   return buffer;
 }
 
+function setDocumentLoadState(state, message) {
+  documentLoadState = state;
+  if (el.loadingStatus) {
+    el.loadingStatus.hidden = state === "ready";
+    el.loadingStatus.textContent = message || "";
+  }
+  if (state !== "ready") updateButtonStates();
+}
+
+function announceLoading(message) {
+  setDocumentLoadState("loading", message);
+  announceStatus(message);
+}
+
 async function loadDocumentForThisWindow() {
   if (!isRunningInTauri()) {
     // Browser fallback (e.g. previewing this page directly, with no
@@ -160,6 +176,10 @@ async function loadDocumentForThisWindow() {
       `kind=${info.kind} name=${info.name || ""} transferred_bytes=${transferredBytes} elapsed_ms=${Math.round(performance.now() - initStarted)}`
     );
     // info: { kind: "file" | "new", name, path, data }
+    if (info.kind === "file") {
+      announceLoading(`Loading ${info.name}. Please wait.`);
+      await recordLoadDiagnostic("loading-state", `state=loading name=${info.name}`);
+    }
 
     if (info.kind === "new") {
       const displayNumber = Number(String(info.name || "").replace(/^Untitled Audio\s+/, "")) || null;
@@ -174,6 +194,9 @@ async function loadDocumentForThisWindow() {
     } else {
       let buffer;
       if (info.decoder === "native-mp3") {
+        if (nativeDecodeRequested) throw new Error("This editor already requested its native MP3 decode.");
+        nativeDecodeRequested = true;
+        announceLoading(`Decoding ${info.name}. Please wait.`);
         await recordLoadDiagnostic(
           "native-decode-request",
           `name=${info.name} source_path=${info.path || ""}`
@@ -184,6 +207,7 @@ async function loadDocumentForThisWindow() {
           "native-decode-received",
           `elapsed_ms=${Math.round(performance.now() - nativeStarted)} duration_sec=${nativeAudio.duration_sec} channels=${nativeAudio.channels} sample_rate=${nativeAudio.sample_rate} frames=${nativeAudio.frames}`
         );
+        announceLoading(`Preparing ${info.name}. Please wait.`);
         buffer = audioBufferFromNativeDecode(nativeAudio);
         await recordLoadDiagnostic(
           "native-buffer-created",
@@ -207,6 +231,8 @@ async function loadDocumentForThisWindow() {
       });
     }
 
+    documentLoadState = "ready";
+    if (el.loadingStatus) el.loadingStatus.hidden = true;
     await recordLoadDiagnostic(
       "editor-ready",
       activeDoc && activeDoc.buffer
@@ -215,6 +241,8 @@ async function loadDocumentForThisWindow() {
     );
     finishLoadingDocument();
   } catch (err) {
+    documentLoadState = "failed";
+    setDocumentLoadState("failed", "Audio document could not be opened.");
     await recordLoadDiagnostic(
       "editor-open-failed",
       `error=${err && err.message ? err.message : String(err)}`
@@ -290,6 +318,7 @@ function cacheElements() {
   el = {
     documentHeading: document.getElementById("document-heading"),
     positionInfo: document.getElementById("position-info"),
+    loadingStatus: document.getElementById("loading-status"),
     selectionInfo: document.getElementById("selection-info"),
 
     playheadSlider: document.getElementById("playhead-slider"),
@@ -1588,7 +1617,7 @@ function updateSelectionDisplay() {
 }
 
 function updateButtonStates() {
-  const has = !!activeDoc;
+  const has = !!activeDoc && documentLoadState === "ready";
   const hasSelection = has && activeDoc.hasSelection();
 
   [el.setSelectionStartButton, el.auditionButton, el.editorPlayPauseButton, el.playheadSlider].forEach(
