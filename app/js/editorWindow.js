@@ -110,6 +110,30 @@ function initShortcutDiagnosticsPanel() {
 // Window init: ask Rust what this window is supposed to be editing
 // ---------------------------------------------------------------------
 
+
+function audioBufferFromNativeDecode(nativeAudio) {
+  const sampleRate = Number(nativeAudio.sample_rate);
+  const channelCount = Number(nativeAudio.channels);
+  const frameCount = Number(nativeAudio.frames);
+  const encodedChannels = nativeAudio.channel_f32_le_base64 || [];
+  if (!sampleRate || !channelCount || !frameCount || encodedChannels.length !== channelCount) {
+    throw new Error("Native decoder returned incomplete audio metadata.");
+  }
+  const ctx = getAudioContext();
+  const buffer = ctx.createBuffer(channelCount, frameCount, sampleRate);
+  for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+    const binary = atob(encodedChannels[channelIndex]);
+    if (binary.length !== frameCount * 4) {
+      throw new Error("Native decoder returned an incomplete PCM channel.");
+    }
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const samples = new Float32Array(bytes.buffer);
+    buffer.copyToChannel(samples, channelIndex);
+  }
+  return buffer;
+}
+
 async function loadDocumentForThisWindow() {
   if (!isRunningInTauri()) {
     // Browser fallback (e.g. previewing this page directly, with no
@@ -148,12 +172,31 @@ async function loadDocumentForThisWindow() {
         documentId: window.__TAURI__.window.getCurrentWindow().label,
       });
     } else {
-      const file = new File([new Uint8Array(info.data)], info.name);
-      await recordLoadDiagnostic(
-        "file-object-created",
-        `name=${info.name} file_bytes=${file.size} source_path=${info.path || ""}`
-      );
-      const buffer = await decodeAudioFile(file, recordDecodeDiagnostic);
+      let buffer;
+      if (info.decoder === "native-mp3") {
+        await recordLoadDiagnostic(
+          "native-decode-request",
+          `name=${info.name} source_path=${info.path || ""}`
+        );
+        const nativeStarted = performance.now();
+        const nativeAudio = await invoke("native_decode_audio", { path: info.path });
+        await recordLoadDiagnostic(
+          "native-decode-received",
+          `elapsed_ms=${Math.round(performance.now() - nativeStarted)} duration_sec=${nativeAudio.duration_sec} channels=${nativeAudio.channels} sample_rate=${nativeAudio.sample_rate} frames=${nativeAudio.frames}`
+        );
+        buffer = audioBufferFromNativeDecode(nativeAudio);
+        await recordLoadDiagnostic(
+          "native-buffer-created",
+          `duration_sec=${buffer.duration} channels=${buffer.numberOfChannels} sample_rate=${buffer.sampleRate} frames=${buffer.length}`
+        );
+      } else {
+        const file = new File([new Uint8Array(info.data)], info.name);
+        await recordLoadDiagnostic(
+          "file-object-created",
+          `name=${info.name} file_bytes=${file.size} source_path=${info.path || ""}`
+        );
+        buffer = await decodeAudioFile(file, recordDecodeDiagnostic);
+      }
       const extension = (info.name.split(".").pop() || "wav").toLowerCase();
       activeDoc = new AudioDocument({
         buffer,

@@ -1,3 +1,12 @@
+
+## 0.2.10 - Native MP3 decoding boundary
+
+Real Windows diagnostics established that WebView2 `decodeAudioData()` could report a successful 0.287-second decode for the complete 1,100,275-byte `Roxanne Follow Up.mp3`, while independent inspection established that the source contains roughly 91.69 seconds of valid MP3 audio. This build therefore moves MP3 decoding across a native boundary without changing the working editor, Save, Primary Editor, document identity, dirty-state, shutdown, or workstation navigation systems.
+
+MP3 editor windows no longer receive the compressed file as a JavaScript byte array and no longer call Web Audio `decodeAudioData()` for MP3. Rust reads and decodes the MP3 with Symphonia, validates that decoded PCM is nonempty and internally consistent, and returns planar 32-bit floating-point PCM plus sample-rate/channel/frame metadata. JavaScript constructs the same `AudioBuffer` object the existing editing engine already consumes. WAV, M4A, FLAC, and OGG remain on the previous Web Audio path in this boundary build.
+
+The audio-load diagnostic log now records `native-decode-selected`, `native-decode-start`, `native-decode-success`, `native-decode-request`, `native-decode-received`, and `native-buffer-created`. The first regression target is `Roxanne Follow Up.mp3`; it should open at approximately 91.69 seconds rather than 0.287 seconds. This is deliberately a decoding-boundary build, not yet the later streaming/long-file architecture required for Tracks and Mixer.
+
 # AccessibleAudioStudio
 
 A professional, browser-based audio recording environment designed from the ground up for keyboard users and screen reader users — fully usable by everyone.

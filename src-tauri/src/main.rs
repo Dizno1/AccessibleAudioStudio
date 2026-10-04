@@ -10,6 +10,14 @@ use std::path::PathBuf;
 use std::collections::{HashMap, VecDeque};
 
 use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use symphonia::core::audio::{SampleBuffer, Signal};
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
 
 // A generous buffer for the Explorer-style multi-select return value.
 #[cfg(windows)]
@@ -900,6 +908,7 @@ struct EditorInitInfo {
     name: String,
     path: Option<String>,
     data: Option<Vec<u8>>,
+    decoder: Option<String>,
 }
 
 /// Everything Open Audio Diagnostics needs, now reported in terms of
@@ -1072,6 +1081,146 @@ async fn open_new_editor_window(
 /// read (moved, deleted, permissions changed between selection and this
 /// call) surfaces as a normal `Err`, for the editor window's own JS to
 /// announce, rather than blocking every other window from opening.
+
+#[derive(Serialize)]
+struct NativeDecodedAudio {
+    sample_rate: u32,
+    channels: usize,
+    frames: usize,
+    duration_sec: f64,
+    /// One base64 string per channel. Each string contains little-endian f32 PCM.
+    channel_f32_le_base64: Vec<String>,
+}
+
+/// Native MP3 decoding boundary. This intentionally handles MP3 only in this
+/// build: the failing WebView2 MP3 path is replaced without disturbing the
+/// already-working WAV/M4A/FLAC/OGG path or any editor/save/window behavior.
+#[tauri::command]
+async fn native_decode_audio(
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<NativeDecodedAudio, String> {
+    let label = window.label().to_string();
+    let path_buf = PathBuf::from(&path);
+    let extension = path_buf.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if extension != "mp3" {
+        return Err("Native decoding is currently enabled for MP3 files only.".to_string());
+    }
+
+    let started = std::time::Instant::now();
+    let file_len = fs::metadata(&path_buf).map(|m| m.len()).unwrap_or(0);
+    let _ = write_load_diagnostic(&label, "native-decode-start", &format!("path={path} file_bytes={file_len}"));
+
+    let file = fs::File::open(&path_buf).map_err(|e| format!("Could not open audio file: {e}"))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("mp3");
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| format!("Could not identify MP3 stream: {e}"))?;
+    let mut format = probed.format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| "The MP3 contains no decodable audio track.".to_string())?;
+    let track_id = track.id;
+    let codec_params = track.codec_params.clone();
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("Could not create MP3 decoder: {e}"))?;
+
+    let mut channel_data: Vec<Vec<f32>> = Vec::new();
+    let mut sample_rate: Option<u32> = None;
+    let mut packet_count: usize = 0;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymphoniaError::ResetRequired) => {
+                decoder.reset();
+                continue;
+            }
+            Err(err) => return Err(format!("MP3 packet read failed: {err}")),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(SymphoniaError::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(SymphoniaError::ResetRequired) => {
+                decoder.reset();
+                continue;
+            }
+            Err(err) => return Err(format!("MP3 decode failed: {err}")),
+        };
+        packet_count += 1;
+        let spec = *decoded.spec();
+        let channels = spec.channels.count();
+        if channels == 0 {
+            continue;
+        }
+        match sample_rate {
+            None => sample_rate = Some(spec.rate),
+            Some(rate) if rate != spec.rate => {
+                return Err(format!("MP3 sample rate changed during decode ({rate} to {}).", spec.rate));
+            }
+            _ => {}
+        }
+        if channel_data.is_empty() {
+            channel_data = (0..channels).map(|_| Vec::new()).collect();
+        } else if channel_data.len() != channels {
+            return Err("MP3 channel count changed during decode.".to_string());
+        }
+
+        let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        sample_buf.copy_interleaved_ref(decoded);
+        let samples = sample_buf.samples();
+        for frame in samples.chunks_exact(channels) {
+            for (channel_index, sample) in frame.iter().enumerate() {
+                channel_data[channel_index].push(*sample);
+            }
+        }
+    }
+
+    let sample_rate = sample_rate.ok_or_else(|| "The MP3 decoder produced no audio samples.".to_string())?;
+    let frames = channel_data.first().map(|c| c.len()).unwrap_or(0);
+    if frames == 0 {
+        return Err("The MP3 decoder produced an empty audio document.".to_string());
+    }
+    if channel_data.iter().any(|c| c.len() != frames) {
+        return Err("Native decoder produced inconsistent channel lengths.".to_string());
+    }
+    let duration_sec = frames as f64 / sample_rate as f64;
+
+    let mut encoded_channels = Vec::with_capacity(channel_data.len());
+    for channel in channel_data {
+        let mut bytes = Vec::with_capacity(channel.len() * 4);
+        for sample in channel {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        encoded_channels.push(BASE64_STANDARD.encode(bytes));
+    }
+
+    let _ = write_load_diagnostic(
+        &label,
+        "native-decode-success",
+        &format!(
+            "elapsed_ms={} duration_sec={duration_sec} channels={} sample_rate={sample_rate} frames={frames} packets={packet_count}",
+            started.elapsed().as_millis(), encoded_channels.len()
+        ),
+    );
+
+    Ok(NativeDecodedAudio {
+        sample_rate,
+        channels: encoded_channels.len(),
+        frames,
+        duration_sec,
+        channel_f32_le_base64: encoded_channels,
+    })
+}
+
 #[tauri::command]
 async fn get_editor_init_info(
     window: tauri::WebviewWindow,
@@ -1089,6 +1238,29 @@ async fn get_editor_init_info(
     match source {
         Some(PendingEditorSource::ExistingFile(path)) => {
             let metadata_len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+            // MP3 is decoded natively. Do not duplicate the compressed file into the
+            // WebView first: the native decoder reads the path directly. Other formats
+            // stay on the already-tested Web Audio path for this boundary build.
+            if extension == "mp3" {
+                let _ = write_load_diagnostic(
+                    &label,
+                    "native-decode-selected",
+                    &format!("path={} file_bytes={metadata_len} codec=mp3", path.display()),
+                );
+                return Ok(EditorInitInfo {
+                    kind: "file".to_string(),
+                    name,
+                    path: Some(path.to_string_lossy().to_string()),
+                    data: None,
+                    decoder: Some("native-mp3".to_string()),
+                });
+            }
             let _ = write_load_diagnostic(
                 &label,
                 "rust-read-start",
@@ -1116,15 +1288,12 @@ async fn get_editor_init_info(
                     read_started.elapsed().as_millis()
                 ),
             );
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.to_string_lossy().to_string());
             Ok(EditorInitInfo {
                 kind: "file".to_string(),
                 name,
                 path: Some(path.to_string_lossy().to_string()),
                 data: Some(data),
+                decoder: Some("web-audio".to_string()),
             })
         }
         Some(PendingEditorSource::NewEmpty { display_number }) => Ok(EditorInitInfo {
@@ -1132,6 +1301,7 @@ async fn get_editor_init_info(
             name: format!("Untitled Audio {}", display_number),
             path: None,
             data: None,
+            decoder: None,
         }),
         None => Err(
             "This editor window has no registered source. It may have been reloaded after already opening once."
@@ -1892,6 +2062,7 @@ fn main() {
             open_audio_windows,
             open_new_editor_window,
             get_editor_init_info,
+            native_decode_audio,
             append_audio_load_diagnostic,
             set_shared_audio_clipboard,
             get_shared_audio_clipboard,
