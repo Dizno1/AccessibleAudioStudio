@@ -246,6 +246,43 @@ export function encodeMp3(audioBuffer, bitrateKbps = 192) {
   return new Blob(chunks, { type: "audio/mp3" });
 }
 
+/** Responsive MP3 encoder for long documents. Converts and encodes in small
+ * blocks and yields to the WebView between batches so Windows/JAWS continue
+ * receiving messages. onProgress receives an integer percentage. */
+export async function encodeMp3Async(audioBuffer, bitrateKbps = 192, onProgress = null) {
+  if (!window.lamejs) throw new Error("The MP3 encoder did not load. Try saving as WAV instead.");
+  const numChannels = Math.min(2, audioBuffer.numberOfChannels);
+  const sampleRate = audioBuffer.sampleRate;
+  const encoder = new window.lamejs.Mp3Encoder(numChannels, sampleRate, bitrateKbps);
+  const leftSource = audioBuffer.getChannelData(0);
+  const rightSource = numChannels === 2 ? audioBuffer.getChannelData(1) : null;
+  const chunks = [];
+  const block = 1152;
+  let lastPercent = -1;
+  for (let i = 0, batch = 0; i < leftSource.length; i += block, batch++) {
+    const end = Math.min(i + block, leftSource.length);
+    const left = new Int16Array(end - i);
+    const right = numChannels === 2 ? new Int16Array(end - i) : null;
+    for (let j = i, k = 0; j < end; j++, k++) {
+      let v = Math.max(-1, Math.min(1, leftSource[j]));
+      left[k] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      if (right) {
+        v = Math.max(-1, Math.min(1, rightSource[j]));
+        right[k] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      }
+    }
+    const encoded = right ? encoder.encodeBuffer(left, right) : encoder.encodeBuffer(left);
+    if (encoded.length) chunks.push(new Int8Array(encoded));
+    const percent = Math.min(99, Math.floor((end / leftSource.length) * 100));
+    if (onProgress && percent >= lastPercent + 10) { lastPercent = percent; onProgress(percent); }
+    if ((batch & 127) === 127) await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  const finalBuf = encoder.flush();
+  if (finalBuf.length) chunks.push(new Int8Array(finalBuf));
+  if (onProgress) onProgress(100);
+  return new Blob(chunks, { type: "audio/mp3" });
+}
+
 function floatTo16BitPCM(floatArray) {
   const out = new Int16Array(floatArray.length);
   for (let i = 0; i < floatArray.length; i++) {

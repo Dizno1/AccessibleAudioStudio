@@ -1740,6 +1740,61 @@ fn save_audio_as_native(window: tauri::WebviewWindow, suggested_name: String, by
     }
 }
 
+#[cfg(windows)]
+fn choose_audio_save_path_impl(window: &tauri::WebviewWindow, suggested_name: &str) -> Result<Option<String>, String> {
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Controls::Dialogs::{CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_HIDEREADONLY, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    use raw_window_handle::HasWindowHandle;
+    fn to_wide(s: &str) -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() }
+    let workspace = audio_workspace_dir()?;
+    fs::create_dir_all(&workspace).map_err(|e| format!("Could not create AccessibleAudioStudio workspace: {e}"))?;
+    let owner_hwnd: HWND = window.window_handle().ok().and_then(|handle| match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut std::ffi::c_void)), _ => None,
+    }).unwrap_or_default();
+    let filter = to_wide("WAV audio\0*.wav\0MP3 audio\0*.mp3\0All Files\0*.*\0\0");
+    let title = to_wide("Save Audio As");
+    let initial_dir = to_wide(&workspace.to_string_lossy());
+    let default_ext = if suggested_name.to_ascii_lowercase().ends_with(".mp3") { "mp3" } else { "wav" };
+    let default_ext_wide = to_wide(default_ext);
+    let mut file_buffer = vec![0u16; 32768];
+    let suggested = to_wide(suggested_name);
+    let copy_len = suggested.len().min(file_buffer.len());
+    file_buffer[..copy_len].copy_from_slice(&suggested[..copy_len]);
+    let mut ofn = OPENFILENAMEW::default();
+    ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32; ofn.hwndOwner = owner_hwnd;
+    ofn.lpstrFilter = PCWSTR(filter.as_ptr()); ofn.lpstrFile = PWSTR(file_buffer.as_mut_ptr()); ofn.nMaxFile = file_buffer.len() as u32;
+    ofn.lpstrInitialDir = PCWSTR(initial_dir.as_ptr()); ofn.lpstrTitle = PCWSTR(title.as_ptr()); ofn.lpstrDefExt = PCWSTR(default_ext_wide.as_ptr());
+    ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+    let succeeded = unsafe { GetSaveFileNameW(&mut ofn) };
+    if !succeeded.as_bool() { let code = unsafe { CommDlgExtendedError() }; if code.0 == 0 { return Ok(None); } return Err(format!("Save As dialog failed (CommDlgExtendedError code {}).", code.0)); }
+    let end = file_buffer.iter().position(|&c| c == 0).unwrap_or(file_buffer.len());
+    Ok(Some(String::from_utf16_lossy(&file_buffer[..end])))
+}
+
+#[tauri::command]
+fn choose_audio_save_path_native(window: tauri::WebviewWindow, suggested_name: String) -> Result<Option<String>, String> {
+    #[cfg(windows)] { return choose_audio_save_path_impl(&window, &suggested_name); }
+    #[cfg(not(windows))] { let _ = window; Ok(Some(audio_workspace_dir()?.join(suggested_name).to_string_lossy().to_string())) }
+}
+
+#[tauri::command]
+fn begin_audio_save_stream(path: String) -> Result<(), String> {
+    let target = PathBuf::from(path); if target.as_os_str().is_empty() { return Err("No save destination is available.".to_string()); }
+    fs::File::create(&target).map_err(|e| format!("Could not start audio save: {e}"))?; Ok(())
+}
+#[tauri::command]
+fn append_audio_save_stream(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new().append(true).open(&path).map_err(|e| format!("Could not continue audio save: {e}"))?;
+    file.write_all(&bytes).map_err(|e| format!("Could not continue audio save: {e}"))
+}
+#[tauri::command]
+fn finish_audio_save_stream(path: String, expected_bytes: usize) -> Result<String, String> {
+    let target = PathBuf::from(&path); verify_audio_write(&target, expected_bytes)?; Ok(target.to_string_lossy().to_string())
+}
+#[tauri::command]
+fn abort_audio_save_stream(path: String) -> Result<(), String> { let _ = fs::remove_file(path); Ok(()) }
+
 #[tauri::command]
 fn save_audio_to_path(path: String, bytes: Vec<u8>) -> Result<String, String> {
     let target = PathBuf::from(&path);
@@ -2126,6 +2181,11 @@ fn main() {
             get_unsaved_editor_names,
             save_audio_to_workspace,
             save_audio_as_native,
+            choose_audio_save_path_native,
+            begin_audio_save_stream,
+            append_audio_save_stream,
+            finish_audio_save_stream,
+            abort_audio_save_stream,
             save_audio_to_path,
             discard_all_and_quit,
             begin_application_shutdown,

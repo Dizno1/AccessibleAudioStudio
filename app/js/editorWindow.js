@@ -20,7 +20,7 @@
 import { announceStatus, announceAlert } from "./announcer.js";
 import { formatTimePrecise, formatDurationNatural } from "./timeFormat.js";
 import * as bufUtil from "./audioBufferUtils.js";
-import { encodeWav, encodeMp3, getAudioContext, decodeAudioFile } from "./audioCodec.js";
+import { encodeWav, encodeMp3, encodeMp3Async, getAudioContext, decodeAudioFile } from "./audioCodec.js";
 import { BufferPlayer } from "./audioBufferPlayer.js";
 import * as clipboard from "./audioClipboard.js";
 import { AudioDocument } from "./audioDocument.js";
@@ -1529,7 +1529,32 @@ function refreshAfterEdit() {
 // ---------------------------------------------------------------------
 
 async function encodeActiveDocument(format) {
-  return format === "mp3" ? encodeMp3(activeDoc.buffer) : encodeWav(activeDoc.buffer);
+  if (format === "mp3") {
+    announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. Please wait.`);
+    return await encodeMp3Async(activeDoc.buffer, 192, (percent) => {
+      if (percent > 0 && percent < 100 && percent % 10 === 0)
+        announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. ${percent} percent.`);
+    });
+  }
+  return encodeWav(activeDoc.buffer);
+}
+
+async function writeBlobToNativePath(path, blob) {
+  const CHUNK = 1024 * 1024;
+  await window.__TAURI__.core.invoke("begin_audio_save_stream", { path });
+  let written = 0;
+  try {
+    for (let offset = 0; offset < blob.size; offset += CHUNK) {
+      const part = new Uint8Array(await blob.slice(offset, offset + CHUNK).arrayBuffer());
+      await window.__TAURI__.core.invoke("append_audio_save_stream", { path, bytes: Array.from(part) });
+      written += part.byteLength;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    return await window.__TAURI__.core.invoke("finish_audio_save_stream", { path, expectedBytes: written });
+  } catch (err) {
+    try { await window.__TAURI__.core.invoke("abort_audio_save_stream", { path }); } catch (_) {}
+    throw err;
+  }
 }
 
 function formatForDocument() {
@@ -1553,8 +1578,8 @@ async function handleNativeSaveAs() {
       announceStatus(`${suggestedName} saved.`);
       return true;
     }
-    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
-    const savedPath = await window.__TAURI__.core.invoke("save_audio_as_native", { suggestedName, bytes });
+    const savedPath = await window.__TAURI__.core.invoke("choose_audio_save_path_native", { suggestedName });
+    if (savedPath) await writeBlobToNativePath(savedPath, blob);
     if (!savedPath) {
       if (applicationShutdownRequested) {
         applicationShutdownRequested = false;
@@ -1592,8 +1617,7 @@ async function handleSave() {
   const format = formatForDocument();
   try {
     const blob = await encodeActiveDocument(format);
-    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
-    const savedPath = await window.__TAURI__.core.invoke("save_audio_to_path", { path: activeDoc.sourceKey, bytes });
+    const savedPath = await writeBlobToNativePath(activeDoc.sourceKey, blob);
     activeDoc.markSaved();
     updateWindowTitle(); updateButtonStates();
     announceStatus(`${activeDoc.baseName || "Audio"} saved.`);
