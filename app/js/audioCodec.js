@@ -249,7 +249,7 @@ export function encodeMp3(audioBuffer, bitrateKbps = 192) {
 /** Responsive MP3 encoder for long documents. Converts and encodes in small
  * blocks and yields to the WebView between batches so Windows/JAWS continue
  * receiving messages. onProgress receives an integer percentage. */
-export async function encodeMp3Async(audioBuffer, bitrateKbps = 192, onProgress = null) {
+export async function encodeMp3Async(audioBuffer, bitrateKbps = 192, onProgress = null, signal = null) {
   if (!window.lamejs) throw new Error("The MP3 encoder did not load. Try saving as WAV instead.");
   const numChannels = Math.min(2, audioBuffer.numberOfChannels);
   const sampleRate = audioBuffer.sampleRate;
@@ -258,8 +258,12 @@ export async function encodeMp3Async(audioBuffer, bitrateKbps = 192, onProgress 
   const rightSource = numChannels === 2 ? audioBuffer.getChannelData(1) : null;
   const chunks = [];
   const block = 1152;
-  let lastPercent = -1;
+  let lastMilestone = 0;
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException("Save canceled.", "AbortError");
+  };
   for (let i = 0, batch = 0; i < leftSource.length; i += block, batch++) {
+    throwIfAborted();
     const end = Math.min(i + block, leftSource.length);
     const left = new Int16Array(end - i);
     const right = numChannels === 2 ? new Int16Array(end - i) : null;
@@ -274,9 +278,15 @@ export async function encodeMp3Async(audioBuffer, bitrateKbps = 192, onProgress 
     const encoded = right ? encoder.encodeBuffer(left, right) : encoder.encodeBuffer(left);
     if (encoded.length) chunks.push(new Int8Array(encoded));
     const percent = Math.min(99, Math.floor((end / leftSource.length) * 100));
-    if (onProgress && percent >= lastPercent + 10) { lastPercent = percent; onProgress(percent); }
-    if ((batch & 127) === 127) await new Promise(resolve => setTimeout(resolve, 0));
+    const milestone = Math.floor(percent / 10) * 10;
+    if (onProgress && milestone >= 10 && milestone > lastMilestone) {
+      lastMilestone = milestone;
+      onProgress(milestone);
+    }
+    // Yield often enough that Escape, JAWS, and Windows messages remain live.
+    if ((batch & 31) === 31) await new Promise(resolve => setTimeout(resolve, 0));
   }
+  throwIfAborted();
   const finalBuf = encoder.flush();
   if (finalBuf.length) chunks.push(new Int8Array(finalBuf));
   if (onProgress) onProgress(100);

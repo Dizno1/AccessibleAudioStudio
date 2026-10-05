@@ -37,6 +37,7 @@ let applicationShutdownRequested = false;
 let documentLoadState = "loading";
 let nativeDecodeRequested = false;
 let editorInitializationStarted = false;
+let activeSaveOperation = null;
 
 function isRunningInTauri() {
   return typeof window !== "undefined" && !!window.__TAURI__;
@@ -409,6 +410,18 @@ function bindEvents() {
   bindPlayheadSlider();
   bindTimelineClick();
   bindMenuEvents();
+
+  // Once the native Save As dialog has closed, Escape cancels the actual
+  // encode/write operation. This is deliberately a capture listener so the
+  // command works with Virtual PC Cursor either on or off and regardless of
+  // which editor control currently has focus.
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && activeSaveOperation) {
+      event.preventDefault();
+      event.stopPropagation();
+      activeSaveOperation.abort();
+    }
+  }, true);
 
   // Keeps the visual timeline correctly sized and drawn as the window is
   // resized or the OS zoom/magnification level changes — directly
@@ -1562,24 +1575,28 @@ function refreshAfterEdit() {
 // Save / Save As
 // ---------------------------------------------------------------------
 
-async function encodeActiveDocument(format) {
+async function encodeActiveDocument(format, signal = null) {
+  if (signal?.aborted) throw new DOMException("Save canceled.", "AbortError");
   if (format === "mp3") {
-    announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. Please wait.`);
+    announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. Please wait. Press Escape to cancel.`);
     return await encodeMp3Async(activeDoc.buffer, 192, (percent) => {
       if (percent > 0 && percent < 100 && percent % 10 === 0)
-        announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. ${percent} percent.`);
-    });
+        announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. ${percent} percent. Press Escape to cancel.`);
+    }, signal);
   }
   return encodeWav(activeDoc.buffer);
 }
 
-async function writeBlobToNativePath(path, blob, onProgress = null) {
-  const CHUNK = 1024 * 1024;
+async function writeBlobToNativePath(path, blob, onProgress = null, signal = null) {
+  // Smaller IPC chunks make progress and Escape cancellation responsive even
+  // when Array.from() and Tauri serialization are the expensive part.
+  const CHUNK = 256 * 1024;
   await window.__TAURI__.core.invoke("begin_audio_save_stream", { path });
   let written = 0;
   let lastPercent = 0;
   try {
     for (let offset = 0; offset < blob.size; offset += CHUNK) {
+      if (signal?.aborted) throw new DOMException("Save canceled.", "AbortError");
       const part = new Uint8Array(await blob.slice(offset, offset + CHUNK).arrayBuffer());
       await window.__TAURI__.core.invoke("append_audio_save_stream", { path, bytes: Array.from(part) });
       written += part.byteLength;
@@ -1591,11 +1608,26 @@ async function writeBlobToNativePath(path, blob, onProgress = null) {
       }
       await new Promise(resolve => setTimeout(resolve, 0));
     }
+    if (signal?.aborted) throw new DOMException("Save canceled.", "AbortError");
     return await window.__TAURI__.core.invoke("finish_audio_save_stream", { path, expectedBytes: written });
   } catch (err) {
     try { await window.__TAURI__.core.invoke("abort_audio_save_stream", { path }); } catch (_) {}
     throw err;
   }
+}
+
+function isSaveCancellation(err) {
+  return !!err && (err.name === "AbortError" || /save canceled/i.test(err.message || ""));
+}
+
+function beginCancelableSave() {
+  if (activeSaveOperation) activeSaveOperation.abort();
+  activeSaveOperation = new AbortController();
+  return activeSaveOperation;
+}
+
+function finishCancelableSave(controller) {
+  if (activeSaveOperation === controller) activeSaveOperation = null;
 }
 
 function formatForDocument() {
@@ -1633,11 +1665,16 @@ async function handleNativeSaveAs() {
       return false;
     }
     const filename = savedPath.replace(/^.*[\\/]/, "");
-    const blob = await encodeActiveDocument(format);
-    announceStatus(`Saving ${filename}. Please wait.`);
-    await writeBlobToNativePath(savedPath, blob, (percent) => {
-      announceStatus(`Saving ${filename}. ${percent} percent.`);
-    });
+    const saveController = beginCancelableSave();
+    try {
+      const blob = await encodeActiveDocument(format, saveController.signal);
+      announceStatus(`Saving ${filename}. Please wait. Press Escape to cancel.`);
+      await writeBlobToNativePath(savedPath, blob, (percent) => {
+        announceStatus(`Saving ${filename}. ${percent} percent. Press Escape to cancel.`);
+      }, saveController.signal);
+    } finally {
+      finishCancelableSave(saveController);
+    }
     activeDoc.baseName = filename;
     activeDoc.sourceExtension = (filename.split(".").pop() || format).toLowerCase();
     activeDoc.sourceKey = savedPath;
@@ -1652,6 +1689,10 @@ async function handleNativeSaveAs() {
       applicationShutdownRequested = false;
       try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
     }
+    if (isSaveCancellation(err)) {
+      announceStatus("Save canceled. Your changes are still open.");
+      return false;
+    }
     announceAlert(`Save failed. ${err && err.message ? err.message : String(err)} The document remains open with unsaved changes.`);
     return false;
   }
@@ -1663,11 +1704,17 @@ async function handleSave() {
 
   const format = formatForDocument();
   try {
-    const blob = await encodeActiveDocument(format);
-    announceStatus(`Saving ${activeDoc.baseName || "Audio"}. Please wait.`);
-    const savedPath = await writeBlobToNativePath(activeDoc.sourceKey, blob, (percent) => {
-      announceStatus(`Saving ${activeDoc.baseName || "Audio"}. ${percent} percent.`);
-    });
+    const saveController = beginCancelableSave();
+    let savedPath;
+    try {
+      const blob = await encodeActiveDocument(format, saveController.signal);
+      announceStatus(`Saving ${activeDoc.baseName || "Audio"}. Please wait. Press Escape to cancel.`);
+      savedPath = await writeBlobToNativePath(activeDoc.sourceKey, blob, (percent) => {
+        announceStatus(`Saving ${activeDoc.baseName || "Audio"}. ${percent} percent. Press Escape to cancel.`);
+      }, saveController.signal);
+    } finally {
+      finishCancelableSave(saveController);
+    }
     activeDoc.markSaved();
     updateWindowTitle(); updateButtonStates();
     announceStatus(`${activeDoc.baseName || "Audio"} saved.`);
@@ -1677,6 +1724,10 @@ async function handleSave() {
     if (applicationShutdownRequested) {
       applicationShutdownRequested = false;
       try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
+    }
+    if (isSaveCancellation(err)) {
+      announceStatus("Save canceled. Your changes are still open.");
+      return false;
     }
     announceAlert(`Save failed. ${err && err.message ? err.message : String(err)} The document remains open with unsaved changes.`);
     return false;

@@ -1778,22 +1778,39 @@ fn choose_audio_save_path_native(window: tauri::WebviewWindow, suggested_name: S
     #[cfg(not(windows))] { let _ = window; Ok(Some(audio_workspace_dir()?.join(suggested_name).to_string_lossy().to_string())) }
 }
 
+fn audio_save_temp_path(path: &str) -> PathBuf {
+    let target = PathBuf::from(path);
+    let mut temp = target.clone();
+    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("audio");
+    temp.set_file_name(format!(".{name}.aas-saving"));
+    temp
+}
+
 #[tauri::command]
 fn begin_audio_save_stream(path: String) -> Result<(), String> {
-    let target = PathBuf::from(path); if target.as_os_str().is_empty() { return Err("No save destination is available.".to_string()); }
-    fs::File::create(&target).map_err(|e| format!("Could not start audio save: {e}"))?; Ok(())
+    let target = PathBuf::from(&path); if target.as_os_str().is_empty() { return Err("No save destination is available.".to_string()); }
+    let temp = audio_save_temp_path(&path);
+    let _ = fs::remove_file(&temp);
+    fs::File::create(&temp).map_err(|e| format!("Could not start audio save: {e}"))?; Ok(())
 }
 #[tauri::command]
 fn append_audio_save_stream(path: String, bytes: Vec<u8>) -> Result<(), String> {
-    let mut file = fs::OpenOptions::new().append(true).open(&path).map_err(|e| format!("Could not continue audio save: {e}"))?;
+    let temp = audio_save_temp_path(&path);
+    let mut file = fs::OpenOptions::new().append(true).open(&temp).map_err(|e| format!("Could not continue audio save: {e}"))?;
     file.write_all(&bytes).map_err(|e| format!("Could not continue audio save: {e}"))
 }
 #[tauri::command]
 fn finish_audio_save_stream(path: String, expected_bytes: usize) -> Result<String, String> {
-    let target = PathBuf::from(&path); verify_audio_write(&target, expected_bytes)?; Ok(target.to_string_lossy().to_string())
+    let target = PathBuf::from(&path);
+    let temp = audio_save_temp_path(&path);
+    verify_audio_write(&temp, expected_bytes)?;
+    fs::copy(&temp, &target).map_err(|e| format!("Could not finalize audio save: {e}"))?;
+    let _ = fs::remove_file(&temp);
+    verify_audio_write(&target, expected_bytes)?;
+    Ok(target.to_string_lossy().to_string())
 }
 #[tauri::command]
-fn abort_audio_save_stream(path: String) -> Result<(), String> { let _ = fs::remove_file(path); Ok(()) }
+fn abort_audio_save_stream(path: String) -> Result<(), String> { let _ = fs::remove_file(audio_save_temp_path(&path)); Ok(()) }
 
 #[tauri::command]
 fn save_audio_to_path(path: String, bytes: Vec<u8>) -> Result<String, String> {
