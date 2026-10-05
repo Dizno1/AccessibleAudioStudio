@@ -998,6 +998,33 @@ function syncPlayheadUI() {
  * every other native key (Up/Down/PageUp/PageDown) is left alone and
  * still moves the same authoritative playhead via the `input` listener.
  */
+function seekPlaybackFromPlayhead(targetSec) {
+  if (!activeDoc) return;
+  const wasPlaying = player.isPlaying();
+  const mode = playbackMode;
+  const rangeEnd = wasPlaying ? player.rangeEndSec : activeDoc.durationSec;
+  const clamped = Math.max(0, Math.min(targetSec, activeDoc.durationSec));
+  setPlayhead(clamped);
+
+  // A playhead command issued while audio is playing is a seek, not merely
+  // a visual slider move. Restart the current playback mode at the requested
+  // position so what the user hears and what the Playhead control reports
+  // remain the same position.
+  if (wasPlaying && mode) {
+    player.stop();
+    const end = Math.max(clamped, Math.min(rangeEnd, activeDoc.durationSec));
+    if (end > clamped) {
+      player.play(activeDoc.buffer, clamped, end);
+      playbackMode = mode;
+      updateTransportButtonLabels();
+      startPlaybackTicker();
+    } else {
+      playbackMode = null;
+      updateTransportButtonLabels();
+    }
+  }
+}
+
 function bindPlayheadSlider() {
   if (!el.playheadSlider) return;
 
@@ -1006,11 +1033,11 @@ function bindPlayheadSlider() {
     switch (event.key) {
       case "ArrowLeft":
         event.preventDefault();
-        setPlayhead(activeDoc.cursorSec - (event.ctrlKey ? 30 : 10));
+        seekPlaybackFromPlayhead((player.isPlaying() ? player.getPositionSec() : activeDoc.cursorSec) - (event.ctrlKey ? 30 : 10));
         break;
       case "ArrowRight":
         event.preventDefault();
-        setPlayhead(activeDoc.cursorSec + (event.ctrlKey ? 30 : 10));
+        seekPlaybackFromPlayhead((player.isPlaying() ? player.getPositionSec() : activeDoc.cursorSec) + (event.ctrlKey ? 30 : 10));
         break;
       case "Home":
         event.preventDefault();
@@ -1054,7 +1081,7 @@ function bindPlayheadSlider() {
   // authoritative playhead the same way every other interaction does.
   el.playheadSlider.addEventListener("input", () => {
     if (!activeDoc) return;
-    setPlayhead(parseFloat(el.playheadSlider.value));
+    seekPlaybackFromPlayhead(parseFloat(el.playheadSlider.value));
   });
 }
 
@@ -1183,7 +1210,14 @@ function startPlaybackTicker() {
       return;
     }
     const liveSec = player.getPositionSec();
-    if (el.playheadSlider) el.playheadSlider.value = String(liveSec);
+    if (el.playheadSlider) {
+      // Keep the focused native range control truthful while audio is moving.
+      // Do not announce on every animation frame; updating value +
+      // aria-valuetext lets a screen-reader user query the current position
+      // without creating a stream of unsolicited speech.
+      el.playheadSlider.value = String(liveSec);
+      el.playheadSlider.setAttribute("aria-valuetext", formatTimePrecise(liveSec));
+    }
     drawTimeline(liveSec);
     playbackTickerId = requestAnimationFrame(tick);
   };
@@ -1539,15 +1573,22 @@ async function encodeActiveDocument(format) {
   return encodeWav(activeDoc.buffer);
 }
 
-async function writeBlobToNativePath(path, blob) {
+async function writeBlobToNativePath(path, blob, onProgress = null) {
   const CHUNK = 1024 * 1024;
   await window.__TAURI__.core.invoke("begin_audio_save_stream", { path });
   let written = 0;
+  let lastPercent = 0;
   try {
     for (let offset = 0; offset < blob.size; offset += CHUNK) {
       const part = new Uint8Array(await blob.slice(offset, offset + CHUNK).arrayBuffer());
       await window.__TAURI__.core.invoke("append_audio_save_stream", { path, bytes: Array.from(part) });
       written += part.byteLength;
+      const percent = blob.size > 0 ? Math.min(100, Math.floor((written / blob.size) * 100)) : 100;
+      const milestone = Math.floor(percent / 10) * 10;
+      if (onProgress && milestone >= 10 && milestone < 100 && milestone > lastPercent) {
+        lastPercent = milestone;
+        onProgress(milestone);
+      }
       await new Promise(resolve => setTimeout(resolve, 0));
     }
     return await window.__TAURI__.core.invoke("finish_audio_save_stream", { path, expectedBytes: written });
@@ -1567,8 +1608,8 @@ async function handleNativeSaveAs() {
   const proposedBase = activeDoc.baseName ? stripExtension(activeDoc.baseName) : "Untitled Audio";
   const suggestedName = `${proposedBase}.${format}`;
   try {
-    const blob = await encodeActiveDocument(format);
     if (!isRunningInTauri()) {
+      const blob = await encodeActiveDocument(format);
       downloadBlob(blob, suggestedName);
       activeDoc.baseName = suggestedName;
       activeDoc.sourceExtension = format;
@@ -1578,8 +1619,9 @@ async function handleNativeSaveAs() {
       announceStatus(`${suggestedName} saved.`);
       return true;
     }
+    // Show the native Save As dialog before doing expensive encoding. A
+    // canceled Save As should be immediate and should not encode the document.
     const savedPath = await window.__TAURI__.core.invoke("choose_audio_save_path_native", { suggestedName });
-    if (savedPath) await writeBlobToNativePath(savedPath, blob);
     if (!savedPath) {
       if (applicationShutdownRequested) {
         applicationShutdownRequested = false;
@@ -1591,6 +1633,11 @@ async function handleNativeSaveAs() {
       return false;
     }
     const filename = savedPath.replace(/^.*[\\/]/, "");
+    const blob = await encodeActiveDocument(format);
+    announceStatus(`Saving ${filename}. Please wait.`);
+    await writeBlobToNativePath(savedPath, blob, (percent) => {
+      announceStatus(`Saving ${filename}. ${percent} percent.`);
+    });
     activeDoc.baseName = filename;
     activeDoc.sourceExtension = (filename.split(".").pop() || format).toLowerCase();
     activeDoc.sourceKey = savedPath;
@@ -1617,7 +1664,10 @@ async function handleSave() {
   const format = formatForDocument();
   try {
     const blob = await encodeActiveDocument(format);
-    const savedPath = await writeBlobToNativePath(activeDoc.sourceKey, blob);
+    announceStatus(`Saving ${activeDoc.baseName || "Audio"}. Please wait.`);
+    const savedPath = await writeBlobToNativePath(activeDoc.sourceKey, blob, (percent) => {
+      announceStatus(`Saving ${activeDoc.baseName || "Audio"}. ${percent} percent.`);
+    });
     activeDoc.markSaved();
     updateWindowTitle(); updateButtonStates();
     announceStatus(`${activeDoc.baseName || "Audio"} saved.`);

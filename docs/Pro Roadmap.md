@@ -3242,3 +3242,12 @@ The temporary PCM cache is released after editor-ready.
 0.2.14 regression testing exposed a new Recording Studio lifecycle failure: the first Open Audio succeeded, the resulting editor closed cleanly, but a subsequent File > Open Audio activation left the menu without opening the native Windows dialog. The native menu bridge previously combined `emit_to(owner_label, "menu-action", ...)` with JavaScript `listen("menu-action", ..., { target: owner_label })`. 0.2.15 removes that receive-side target dependency and gives each window its own event name (`menu-action:main`, `menu-action:editor-N`). Native menu ownership is therefore encoded in the event name itself and cannot become ambiguous as editor windows are destroyed. Ctrl+O, the permanent Open Audio button, and the native File menu still converge on the same `triggerOpenAudio()` implementation.
 
 Required regression test: Open Audio -> open a short file -> close that editor cleanly -> return to Recording Studio -> File > Open Audio -> verify the native dialog appears. Repeat. If this passes, resume Save/Save As testing.
+
+
+## 0.2.16 responsive save boundary
+
+Regression testing found that Save As could make the WebView unresponsive while a substantial MP3 was encoded synchronously and then converted into one large IPC byte array. 0.2.16 changed MP3 encoding to incremental asynchronous work and changed native file output to bounded chunks so the WebView can continue processing messages.
+
+## 0.2.17 save progress and playback/playhead synchronization
+
+0.2.16 remained too quiet during a lengthy save and exposed a playback/playhead mismatch. 0.2.17 opens the native Save As dialog before encoding, reports real 10-percent preparation milestones during MP3 encoding, then reports real 10-percent Saving milestones while encoded bytes are written through the native chunked save stream. Ctrl+S uses the same progress contract. The Playhead range control now exposes the live playback position in its value and aria-valuetext while playback runs. Moving that control during playback performs an audible seek by restarting the current playback mode at the requested position, keeping the sound and the Playhead control synchronized. The live updates are not sent through the status live region, preventing continuous screen-reader chatter.
