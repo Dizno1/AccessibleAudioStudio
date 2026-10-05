@@ -2070,7 +2070,8 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             // clicking "Make This Editor Primary" in one editor made every
             // other open editor independently invoke the same Primary
             // transfer/confirmation flow on itself.
-            let _ = window.emit_to(owner_label, "menu-action", action);
+            let event_name = format!("menu-action:{}", owner_label);
+            let _ = window.emit_to(owner_label, event_name.as_str(), action);
         }
     }
 }

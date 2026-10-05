@@ -82,16 +82,13 @@ function bindMenuEvents() {
   if (!isRunningInTauri()) return;
   const { listen } = window.__TAURI__.event;
 
-  // { target: "main" } scopes this listener to events Rust actually sent to
-  // the Recording Studio window. A plain, option-less listen() defaults to
-  // Tauri's { kind: "Any" } target, which receives every "menu-action" from
-  // every open editor window too -- harmless here today only because the
-  // switch below silently drops IDs it doesn't recognize (see the "default"
-  // case), but that's accidental safety, not a guaranteed one, and every
-  // editor's identical unscoped listener was the actual cause of the 0.2.8
-  // Primary Editor cross-window bug. Scoped the same way here for
-  // consistency and so this file doesn't quietly depend on that accident.
-  listen("menu-action", async (event) => {
+  // Native menu delivery uses a window-specific event name instead of relying
+  // on Tauri event-target filtering. Real 0.2.14 regression testing found that
+  // after opening and cleanly closing one editor, the Recording Studio native
+  // File > Open Audio item could leave the menu without triggering Open Audio.
+  // A unique event name makes the route deterministic: the main window can only
+  // hear its own menu events, regardless of editor creation/destruction.
+  listen("menu-action:main", async (event) => {
     switch (event.payload) {
       case "newAudio":
         triggerNewAudio();
@@ -112,17 +109,12 @@ function bindMenuEvents() {
         return;
       }
       case "goToPrimaryEditor":
-        // Reuses the exact same registered action the keyboard shortcut
-        // path already calls (registerAudioEditorLauncherShortcuts, below)
-        // rather than maintaining a second implementation. main.js used to
-        // have its own separate bindNativeMenuEvents()/goToPrimaryEditor()
-        // for this one menu item; that duplicate path has been removed.
         await triggerAction("goToPrimaryEditor");
         return;
       default:
         return;
     }
-  }, { target: "main" });
+  });
 }
 
 export function registerAudioEditorLauncherShortcuts() {

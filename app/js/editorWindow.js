@@ -487,9 +487,11 @@ function bindMenuEvents() {
   // window Rust actually emitted to. See docs/Pro Roadmap.md, "Primary
   // Editor architecture," 0.2.9 entry.
   const currentLabel = window.__TAURI__.window.getCurrentWindow().label;
-  const toThisWindow = { target: currentLabel };
 
-  listen("menu-action", async (event) => {
+  // Use a unique event name per native window. This avoids depending on
+  // Tauri receive-side target filtering and keeps menu ownership stable even
+  // while editor windows are created and destroyed.
+  listen(`menu-action:${currentLabel}`, async (event) => {
     const id = event.payload;
     if (id === "makePrimaryEditor") {
       await requestMakePrimaryEditor();
@@ -511,18 +513,18 @@ function bindMenuEvents() {
       return;
     }
     await triggerAction(id);
-  }, toThisWindow);
+  });
 
   listen("menu-action-unavailable", (event) => {
     if (event.payload === "goToPrimaryEditor") {
       announceAlert("No Primary Editor is currently set. Use Make This Editor Primary on another editor window first.");
     }
-  }, toThisWindow);
+  });
 
   listen("primary-editor-state-changed", async (event) => {
     isPrimaryEditor = event.payload === currentLabel;
     await updateWindowTitle();
-  }, toThisWindow);
+  });
 
   // Application shutdown is deliberately serialized. Rust asks one editor at
   // a time to resolve its document; only after that editor closes does the
@@ -545,7 +547,7 @@ function bindMenuEvents() {
       try { await window.__TAURI__.core.invoke("cancel_application_shutdown"); } catch (_) {}
       announceAlert("Quit canceled because this document could not be saved.");
     }
-  }, toThisWindow);
+  });
 }
 
 // Guards against a single conceptual activation of "Make This Editor

@@ -1,3 +1,9 @@
+# AccessibleAudioStudioPro 0.2.15 - Repeated Open Audio menu lifecycle repair
+
+Regression testing of 0.2.14 found that after successfully opening an audio document, closing that editor cleanly, and returning to the persistent Recording Studio, File > Open Audio could leave the native menu without opening the Windows Open Audio dialog. 0.2.15 changes native-menu routing to use a unique event name for each owning window (`menu-action:main`, `menu-action:editor-N`) rather than depending on receive-side Tauri event target filtering. Button and keyboard shortcut paths still call the same `triggerOpenAudio()` implementation. No audio decode, long-document, save, dirty-state, Primary Editor, or editing behavior is intentionally changed.
+
+Test contract: launch -> Open Audio -> open short file -> close clean editor -> return to Recording Studio -> File > Open Audio -> native Windows Open Audio dialog must appear. Repeat once more before resuming Save/Save As regression testing.
+
 # 0.2.14 - Duplicate-open regression repair
 
 This build repairs the 0.2.12 regression exposed by the 46-minute MP3 test. The Rust-side permanent per-window decode claim has been removed because it could turn a later duplicate invocation into a fatal `editor-open-failed` result after the legitimate decode had already succeeded. Duplicate prevention now occurs before source/decode work at the editor initialization boundary, with an idempotent `editorInitializationStarted` gate plus the existing one-shot `nativeDecodeRequested` gate. A duplicate initialization is ignored and logged as `editor-init-duplicate-blocked`; it cannot poison the legitimate document-open operation.

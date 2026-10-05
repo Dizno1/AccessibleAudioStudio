@@ -3235,3 +3235,10 @@ The pending editor source is no longer consumed at initialization. It is acknowl
 Loading announcements remain document-local. During chunk transfer the editor announces genuine 10-percent preparation milestones based on PCM frames actually copied. No synthetic progress percentages are used.
 
 The temporary PCM cache is released after editor-ready.
+
+
+## 0.2.15 repeated Open Audio menu lifecycle repair
+
+0.2.14 regression testing exposed a new Recording Studio lifecycle failure: the first Open Audio succeeded, the resulting editor closed cleanly, but a subsequent File > Open Audio activation left the menu without opening the native Windows dialog. The native menu bridge previously combined `emit_to(owner_label, "menu-action", ...)` with JavaScript `listen("menu-action", ..., { target: owner_label })`. 0.2.15 removes that receive-side target dependency and gives each window its own event name (`menu-action:main`, `menu-action:editor-N`). Native menu ownership is therefore encoded in the event name itself and cannot become ambiguous as editor windows are destroyed. Ctrl+O, the permanent Open Audio button, and the native File menu still converge on the same `triggerOpenAudio()` implementation.
+
+Required regression test: Open Audio -> open a short file -> close that editor cleanly -> return to Recording Studio -> File > Open Audio -> verify the native dialog appears. Repeat. If this passes, resume Save/Save As testing.
