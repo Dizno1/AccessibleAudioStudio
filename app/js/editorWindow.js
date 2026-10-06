@@ -145,7 +145,7 @@ async function audioBufferFromNativeDecode(nativeAudio, displayName) {
   const chunkFrames = 1_048_576;
   const totalWork = frameCount * channelCount;
   let completedWork = 0;
-  let lastAnnouncedPercent = 0;
+  let lastAnnouncedPercent = -10;
 
   for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
     for (let startFrame = 0; startFrame < frameCount; startFrame += chunkFrames) {
@@ -170,13 +170,12 @@ async function audioBufferFromNativeDecode(nativeAudio, displayName) {
       completedWork += returnedFrames;
 
       const percent = Math.floor((completedWork / totalWork) * 100);
-      const milestone = percent >= 75 ? 75 : percent >= 50 ? 50 : percent >= 25 ? 25 : 0;
-      if (milestone > lastAnnouncedPercent && milestone < 100) {
+      const milestone = Math.floor(percent / 10) * 10;
+      if (milestone >= lastAnnouncedPercent + 10 && milestone > 0 && milestone < 100) {
         lastAnnouncedPercent = milestone;
-        // Keep the visible loading surface descriptive, but keep live speech terse.
-        // The filename and phase were already announced when preparation began.
-        setDocumentLoadState("loading", `Preparing ${displayName}. ${milestone} percent.`);
-        announceStatus(`${milestone} percent.`);
+        const message = `Preparing ${displayName}. ${milestone} percent.`;
+        setDocumentLoadState("loading", message);
+        announceStatus(message);
         await recordLoadDiagnostic("pcm-transfer-progress", `percent=${milestone} frames_copied=${completedWork} total_frames=${totalWork}`);
       }
     }
@@ -831,6 +830,20 @@ function registerShortcutActions() {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
     handleNavigate(30);
     return { executed: true, resultText: "Moved playhead forward 30 seconds" };
+  });
+  registerAction("jumpBack5Minutes", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    const base = player.isPlaying() ? player.getPositionSec() : activeDoc.cursorSec;
+    seekPlaybackFromPlayhead(base - 300);
+    announceStatus(`Rewind 5 minutes. ${formatTimePrecise(activeDoc.cursorSec)}.`);
+    return { executed: true, resultText: "Rewound 5 minutes" };
+  });
+  registerAction("jumpForward5Minutes", () => {
+    if (!activeDoc) return { executed: false, reason: "No audio document is open." };
+    const base = player.isPlaying() ? player.getPositionSec() : activeDoc.cursorSec;
+    seekPlaybackFromPlayhead(base + 300);
+    announceStatus(`Fast forward 5 minutes. ${formatTimePrecise(activeDoc.cursorSec)}.`);
+    return { executed: true, resultText: "Fast forwarded 5 minutes" };
   });
   registerAction("jumpBeginning", () => {
     if (!activeDoc) return { executed: false, reason: "No audio document is open." };
@@ -1579,14 +1592,10 @@ function refreshAfterEdit() {
 async function encodeActiveDocument(format, signal = null) {
   if (signal?.aborted) throw new DOMException("Save canceled.", "AbortError");
   if (format === "mp3") {
-    announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. Press Escape to cancel.`);
-    let lastPreparationMilestone = 0;
+    announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. Please wait. Press Escape to cancel.`);
     return await encodeMp3Async(activeDoc.buffer, 192, (percent) => {
-      const milestone = percent >= 75 ? 75 : percent >= 50 ? 50 : percent >= 25 ? 25 : 0;
-      if (milestone > lastPreparationMilestone) {
-        lastPreparationMilestone = milestone;
-        announceStatus(`${milestone} percent.`);
-      }
+      if (percent > 0 && percent < 100 && percent % 10 === 0)
+        announceStatus(`Preparing ${activeDoc.baseName || "audio"} for saving. ${percent} percent. Press Escape to cancel.`);
     }, signal);
   }
   return encodeWav(activeDoc.buffer);
@@ -1606,8 +1615,8 @@ async function writeBlobToNativePath(path, blob, onProgress = null, signal = nul
       await window.__TAURI__.core.invoke("append_audio_save_stream", { path, bytes: Array.from(part) });
       written += part.byteLength;
       const percent = blob.size > 0 ? Math.min(100, Math.floor((written / blob.size) * 100)) : 100;
-      const milestone = percent >= 75 ? 75 : percent >= 50 ? 50 : percent >= 25 ? 25 : 0;
-      if (onProgress && milestone > 0 && milestone < 100 && milestone > lastPercent) {
+      const milestone = Math.floor(percent / 10) * 10;
+      if (onProgress && milestone >= 10 && milestone < 100 && milestone > lastPercent) {
         lastPercent = milestone;
         onProgress(milestone);
       }
@@ -1673,9 +1682,9 @@ async function handleNativeSaveAs() {
     const saveController = beginCancelableSave();
     try {
       const blob = await encodeActiveDocument(format, saveController.signal);
-      announceStatus("Saving. Press Escape to cancel.");
+      announceStatus(`Saving ${filename}. Please wait. Press Escape to cancel.`);
       await writeBlobToNativePath(savedPath, blob, (percent) => {
-        announceStatus(`${percent} percent.`);
+        announceStatus(`Saving ${filename}. ${percent} percent. Press Escape to cancel.`);
       }, saveController.signal);
     } finally {
       finishCancelableSave(saveController);
@@ -1713,9 +1722,9 @@ async function handleSave() {
     let savedPath;
     try {
       const blob = await encodeActiveDocument(format, saveController.signal);
-      announceStatus("Saving. Press Escape to cancel.");
+      announceStatus(`Saving ${activeDoc.baseName || "Audio"}. Please wait. Press Escape to cancel.`);
       savedPath = await writeBlobToNativePath(activeDoc.sourceKey, blob, (percent) => {
-        announceStatus(`${percent} percent.`);
+        announceStatus(`Saving ${activeDoc.baseName || "Audio"}. ${percent} percent. Press Escape to cancel.`);
       }, saveController.signal);
     } finally {
       finishCancelableSave(saveController);

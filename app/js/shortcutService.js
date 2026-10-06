@@ -147,6 +147,19 @@ export const SHORTCUTS = [
   // deliberately given no keyboard accelerator, for the same reason).
 
   {
+    action: "jumpBack5Minutes",
+    combo: { key: "j" },
+    label: "J",
+    description: "Rewind 5 minutes",
+  },
+  {
+    action: "jumpForward5Minutes",
+    combo: { key: "l" },
+    label: "L",
+    description: "Fast forward 5 minutes",
+  },
+
+  {
     action: "scrubBack1",
     combo: { key: "u" },
     label: "U",
