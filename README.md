@@ -1,6 +1,7 @@
-# AccessibleAudioStudioPro 0.2.18 - Save progress and playback/playhead synchronization
+# AccessibleAudioStudioPro 0.2.19 - Concise accessible progress announcements
 
-0.2.16 removed the Save As hang, but regression testing exposed two remaining problems: a long silent interval after the destination was chosen, and a Playhead slider that could be moved with the keyboard while playback continued from a different audible position. 0.2.18 shows the native Save As dialog before expensive encoding, announces real encoding progress, announces chunked disk-write progress, and applies the same progress contract to Ctrl+S. During playback, the focused Playhead slider now exposes the live playback time through both its value and aria-valuetext without unsolicited per-frame speech. A keyboard playhead move during playback is now a real seek: playback restarts at the requested position while preserving the current Audition or Play-and-Land mode.
+0.2.19 is a narrowly scoped accessibility refinement over 0.2.18. Long loading and saving keep their real progress feedback and Escape cancellation, but progress speech is reduced to 25, 50, and 75 percent. The filename is announced at the beginning and completion rather than at every milestone. The save phase change is announced as "Saving. Press Escape to cancel." The visible loading status remains descriptive, while a single live-status channel now handles speech so loading progress is not announced twice. No decoding, save-stream, playhead, editing, Primary Editor, or Open Audio architecture was changed.
+
 
 # AccessibleAudioStudioPro 0.2.15 - Repeated Open Audio menu lifecycle repair
 

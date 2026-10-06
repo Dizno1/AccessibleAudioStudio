@@ -3251,3 +3251,8 @@ Regression testing found that Save As could make the WebView unresponsive while 
 ## 0.2.18 save progress and playback/playhead synchronization
 
 0.2.16 remained too quiet during a lengthy save and exposed a playback/playhead mismatch. 0.2.18 opens the native Save As dialog before encoding, reports real 10-percent preparation milestones during MP3 encoding, then reports real 10-percent Saving milestones while encoded bytes are written through the native chunked save stream. Ctrl+S uses the same progress contract. The Playhead range control now exposes the live playback position in its value and aria-valuetext while playback runs. Moving that control during playback performs an audible seek by restarting the current playback mode at the requested position, keeping the sound and the Playhead control synchronized. The live updates are not sent through the status live region, preventing continuous screen-reader chatter.
+
+
+## 0.2.19 concise progress announcements
+
+Regression testing confirmed the 0.2.18 long-save architecture and cancellation behavior but found the live announcements too verbose. 0.2.19 keeps real progress while reducing both long-load and long-save speech to 25, 50, and 75 percent. Filenames identify the operation at its start and result at completion rather than repeating at every milestone. Save phase transitions use the short announcement "Saving. Press Escape to cancel." The loading-status paragraph remains available visually but is no longer a second live region; the shared status announcer is the sole live speech channel, preventing duplicate preparation announcements.
