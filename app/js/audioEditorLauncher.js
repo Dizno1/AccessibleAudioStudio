@@ -15,10 +15,21 @@ import { registerAction, triggerAction } from "./shortcutService.js";
 let el = {};
 
 export function initAudioEditorLauncher() {
+  // Wire the HTML controls first. Native Tauri integrations are deliberately
+  // isolated so a menu/window API failure can never make Open Audio, New Audio,
+  // Tab navigation, or the rest of the Recording Studio appear dead.
   cacheElements();
   bindEvents();
-  bindMenuEvents();
-  bindApplicationCloseProtection();
+
+  try {
+    bindMenuEvents();
+  } catch (err) {
+    console.error("Native menu initialization failed; HTML controls remain available.", err);
+  }
+
+  Promise.resolve(bindApplicationCloseProtection()).catch((err) => {
+    console.error("Close protection initialization failed; Recording Studio remains available.", err);
+  });
 }
 
 async function bindApplicationCloseProtection() {
@@ -80,7 +91,11 @@ function cancelApplicationQuit() {
  */
 function bindMenuEvents() {
   if (!isRunningInTauri()) return;
-  const { listen } = window.__TAURI__.event;
+  const listen = window.__TAURI__?.event?.listen;
+  if (typeof listen !== "function") {
+    console.error("Tauri event.listen is unavailable; native menu events are disabled for this window.");
+    return;
+  }
 
   // Native menu delivery uses a window-specific event name instead of relying
   // on Tauri event-target filtering. Real 0.2.14 regression testing found that

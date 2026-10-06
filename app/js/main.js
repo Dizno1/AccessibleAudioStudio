@@ -103,8 +103,10 @@ async function init() {
   // As of 0.2.0 it only launches editor windows (open_audio_windows /
   // open_new_editor_window) — the actual per-document editing lives
   // entirely in editorWindow.js, in each of those separate windows.
-  initAudioEditorLauncher();
+  // Register keyboard commands before optional native-window integrations.
+  // A native menu/window API problem must never take Ctrl+O/Ctrl+N down with it.
   registerAudioEditorLauncherShortcuts();
+  initAudioEditorLauncher();
 
   state.capabilities = getBrowserCapabilities();
   if (!state.capabilities.isFullySupported) {
@@ -646,4 +648,8 @@ function describeError(err) {
   return err.message || String(err);
 }
 
-init();
+init().catch((err) => {
+  console.error("AccessibleAudioStudio Pro startup failed.", err);
+  const message = `AccessibleAudioStudio Pro startup encountered an error. Basic page controls remain available. ${err?.message || String(err)}`;
+  try { announceAlert(message); } catch (_) {}
+});
